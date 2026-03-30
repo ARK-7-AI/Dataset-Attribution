@@ -1,2 +1,2 @@
 # Dataset-Attribution
-Understanding which training data influenced a model’s output is critical for accountability, copyright, and privacy, yet attribution remains challenging for large models.
+Dataset attribution for LoRA fine-tuned LLMs: accuracy, efficiency, and privacy evaluation using influence functions, gradient similarity, and retrieval methods.
