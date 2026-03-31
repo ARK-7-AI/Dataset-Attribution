@@ -1,0 +1,6 @@
+# Placeholder LoRA training configuration
+experiment_name: baseline_lora
+model_name_or_path: your-base-model
+train_dataset: path/to/train.jsonl
+output_dir: outputs/lora_baseline
+seed: 42
