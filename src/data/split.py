@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import math
 import random
 from dataclasses import dataclass
@@ -75,12 +76,59 @@ def load_split_config(config_path: str | Path) -> SplitConfig:
     )
 
 
-def read_dataset(dataset_path: str | Path) -> list[dict[str, str]]:
-    """Read a CSV dataset into a list of records."""
+def _coerce_record(record: dict[str, Any]) -> dict[str, str]:
+    return {key: "" if value is None else str(value) for key, value in record.items()}
 
-    with Path(dataset_path).open("r", encoding="utf-8", newline="") as handle:
-        reader = csv.DictReader(handle)
-        return [dict(row) for row in reader]
+
+def read_dataset(dataset_path: str | Path) -> list[dict[str, str]]:
+    """Read CSV, JSON, or JSONL dataset into a list of records."""
+
+    path = Path(dataset_path)
+    suffix = path.suffix.lower()
+
+    if suffix == ".csv":
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            return [dict(row) for row in reader]
+
+    if suffix == ".jsonl":
+        rows: list[dict[str, str]] = []
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                parsed = json.loads(line)
+                if not isinstance(parsed, dict):
+                    raise ValueError("JSONL records must be JSON objects")
+                rows.append(_coerce_record(parsed))
+        return rows
+
+    if suffix == ".json":
+        with path.open("r", encoding="utf-8") as handle:
+            parsed = json.load(handle)
+
+        if isinstance(parsed, list):
+            items = parsed
+        elif isinstance(parsed, dict):
+            for key in ("records", "samples", "data"):
+                value = parsed.get(key)
+                if isinstance(value, list):
+                    items = value
+                    break
+            else:
+                raise ValueError("JSON dataset must be a list or contain records/samples/data list")
+        else:
+            raise ValueError("Unsupported JSON dataset format")
+
+        rows = []
+        for item in items:
+            if not isinstance(item, dict):
+                raise ValueError("JSON records must be objects")
+            rows.append(_coerce_record(item))
+        return rows
+
+    raise ValueError("Unsupported dataset format. Use .csv, .json, or .jsonl")
 
 
 def _allocate_counts(size: int, ratios: SplitRatios) -> dict[str, int]:

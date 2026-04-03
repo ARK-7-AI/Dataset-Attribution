@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import json
 from pathlib import Path
 import sys
 
@@ -73,6 +74,25 @@ def test_invalid_explicit_counts_raise() -> None:
             seed=5,
             target_counts={"train": 20, "test": 5, "shadow": 4},
         )
+
+
+
+def test_read_dataset_json_support(tmp_path: Path) -> None:
+    records = _build_records(5)
+    dataset_path = tmp_path / "dataset.json"
+    dataset_path.write_text(json.dumps(records), encoding="utf-8")
+
+    config = SplitConfig(
+        dataset_path=dataset_path,
+        run_id="json-run",
+        output_root=tmp_path / "outputs",
+        seed=3,
+        ratios=SplitRatios(train=0.6, test=0.2, shadow=0.2),
+        stratify_by=("source", "license"),
+    )
+
+    result = run_split(config)
+    assert result["counts"] == {"train": 3, "test": 1, "shadow": 1}
 
 
 def test_run_split_writes_manifests(tmp_path: Path) -> None:
