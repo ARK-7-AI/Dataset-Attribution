@@ -1,6 +1,12 @@
-# Placeholder LoRA training configuration
+# LoRA training configuration
 experiment_name: baseline_lora
-model_name_or_path: your-base-model
-train_dataset: path/to/train.jsonl
-output_dir: outputs/lora_baseline
+base_model_path: llama3.2:3b
+lora:
+  rank: 8
+  alpha: 16
+  dropout: 0.05
+training:
+  batch_size: 4
+  learning_rate: 0.0002
+  epochs: 3
 seed: 42
