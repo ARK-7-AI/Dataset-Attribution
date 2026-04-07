@@ -8,7 +8,7 @@ import math
 import random
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 
 @dataclass(frozen=True)
@@ -80,8 +80,20 @@ def _coerce_record(record: dict[str, Any]) -> dict[str, str]:
     return {key: "" if value is None else str(value) for key, value in record.items()}
 
 
+def _validate_dataset_rows(rows: list[Mapping[str, Any]]) -> None:
+    if not rows:
+        raise ValueError("Dataset must contain at least one row")
+
+    required_keys = ("sample_id", "source", "license")
+    for index, row in enumerate(rows):
+        missing_keys = [key for key in required_keys if key not in row]
+        if missing_keys:
+            missing_str = ", ".join(missing_keys)
+            raise ValueError(f"Invalid dataset row at index {index}: missing required keys: {missing_str}")
+
+
 def read_dataset(dataset_path: str | Path) -> list[dict[str, str]]:
-    """Read CSV, JSON, or JSONL dataset into a list of records."""
+    """Read CSV or JSON dataset into a list of records."""
 
     path = Path(dataset_path)
     suffix = path.suffix.lower()
@@ -89,19 +101,8 @@ def read_dataset(dataset_path: str | Path) -> list[dict[str, str]]:
     if suffix == ".csv":
         with path.open("r", encoding="utf-8", newline="") as handle:
             reader = csv.DictReader(handle)
-            return [dict(row) for row in reader]
-
-    if suffix == ".jsonl":
-        rows: list[dict[str, str]] = []
-        with path.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                line = line.strip()
-                if not line:
-                    continue
-                parsed = json.loads(line)
-                if not isinstance(parsed, dict):
-                    raise ValueError("JSONL records must be JSON objects")
-                rows.append(_coerce_record(parsed))
+            rows = [dict(row) for row in reader]
+        _validate_dataset_rows(rows)
         return rows
 
     if suffix == ".json":
@@ -111,24 +112,26 @@ def read_dataset(dataset_path: str | Path) -> list[dict[str, str]]:
         if isinstance(parsed, list):
             items = parsed
         elif isinstance(parsed, dict):
-            for key in ("records", "samples", "data"):
-                value = parsed.get(key)
-                if isinstance(value, list):
-                    items = value
-                    break
-            else:
-                raise ValueError("JSON dataset must be a list or contain records/samples/data list")
+            data = parsed.get("data")
+            if not isinstance(data, list):
+                raise ValueError("JSON dataset object must contain a 'data' list")
+            items = data
         else:
-            raise ValueError("Unsupported JSON dataset format")
+            raise ValueError("JSON dataset must be a list or an object with a 'data' list")
 
-        rows = []
-        for item in items:
-            if not isinstance(item, dict):
-                raise ValueError("JSON records must be objects")
-            rows.append(_coerce_record(item))
+        if not items:
+            raise ValueError("Dataset must contain at least one row")
+
+        rows: list[dict[str, str]] = []
+        for index, item in enumerate(items):
+            if not isinstance(item, Mapping):
+                raise ValueError(f"Invalid dataset row at index {index}: row must be a JSON object")
+            rows.append(_coerce_record(dict(item)))
+
+        _validate_dataset_rows(rows)
         return rows
 
-    raise ValueError("Unsupported dataset format. Use .csv, .json, or .jsonl")
+    raise ValueError(f"Unsupported dataset format for '{path.name}'. Use .csv or .json")
 
 
 def _allocate_counts(size: int, ratios: SplitRatios) -> dict[str, int]:
