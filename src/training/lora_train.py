@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from argparse import ArgumentParser, Namespace
+import csv
 from datetime import datetime, timezone
+import importlib
 import json
 from pathlib import Path
 from typing import Any, Sequence
@@ -46,59 +48,221 @@ def _build_run_id() -> str:
 
 
 def _get_config_params(config: dict[str, Any]) -> dict[str, Any]:
-    """Extract required training parameters from config."""
+    """Extract resolved training parameters from config."""
     lora_cfg = config.get("lora", {})
     train_cfg = config.get("training", {})
+    data_cfg = config.get("data", {})
+    output_dir = config.get("output_dir") or config.get("output_root") or "outputs/runs"
 
     return {
+        "config_path": config.get("config_path"),
         "experiment_name": config.get("experiment_name", "lora_run"),
         "base_model_path": config.get("base_model_path")
         or config.get("model_name_or_path", ""),
+        "output_dir": str(output_dir),
+        "run_id": config.get("run_id"),
+        "train_data_path": data_cfg.get("train_path")
+        or config.get("train_data_path")
+        or config.get("prepared_train_path"),
+        "eval_data_path": data_cfg.get("eval_path")
+        or config.get("eval_data_path")
+        or config.get("prepared_eval_path"),
         "lora_rank": int(lora_cfg.get("rank", 8)),
         "lora_alpha": float(lora_cfg.get("alpha", 16)),
         "lora_dropout": float(lora_cfg.get("dropout", 0.0)),
+        "lora_target_modules": lora_cfg.get("target_modules"),
+        "lora_bias": str(lora_cfg.get("bias", "none")),
+        "max_seq_len": int(train_cfg.get("max_seq_len", 512)),
         "batch_size": int(train_cfg.get("batch_size", 1)),
         "learning_rate": float(train_cfg.get("learning_rate", 1e-4)),
         "epochs": int(train_cfg.get("epochs", 1)),
+        "gradient_accumulation_steps": int(train_cfg.get("gradient_accumulation_steps", 1)),
+        "logging_steps": int(train_cfg.get("logging_steps", 10)),
+        "eval_steps": int(train_cfg.get("eval_steps", 100)),
+        "save_steps": int(train_cfg.get("save_steps", 100)),
+        "weight_decay": float(train_cfg.get("weight_decay", 0.0)),
+        "warmup_ratio": float(train_cfg.get("warmup_ratio", 0.0)),
+        "device_map": config.get("device_map", "auto"),
+        "torch_dtype": config.get("torch_dtype", "auto"),
         "seed": int(config.get("seed", 42)),
     }
 
 
 def _persist_run_outputs(
-    run_id: str,
+    run_dir: Path,
     params: dict[str, Any],
     metrics: dict[str, Any],
 ) -> Path:
     """Persist train artifacts for a run and return run directory."""
-    run_dir = Path("outputs") / "runs" / run_id / "train"
-    run_dir.mkdir(parents=True, exist_ok=True)
+    train_dir = run_dir / "train"
+    train_dir.mkdir(parents=True, exist_ok=True)
 
-    params_path = run_dir / "params.json"
-    metrics_path = run_dir / "metrics.json"
-    adapter_path = run_dir / "adapter_checkpoint.bin"
+    params_path = train_dir / "params.json"
+    metrics_path = train_dir / "metrics.json"
 
     params_path.write_text(json.dumps(params, indent=2), encoding="utf-8")
     metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
-    adapter_path.write_bytes(b"placeholder-adapter-checkpoint")
 
-    return run_dir
+    return train_dir
+
+
+def _load_records(path: Path) -> list[dict[str, Any]]:
+    suffix = path.suffix.lower()
+    if suffix == ".jsonl":
+        rows: list[dict[str, Any]] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                rows.append(json.loads(line))
+        return rows
+    if suffix == ".json":
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(payload, dict) and isinstance(payload.get("data"), list):
+            return [dict(item) for item in payload["data"]]
+        if isinstance(payload, list):
+            return [dict(item) for item in payload]
+        raise ValueError("JSON train data must be a list or object with a 'data' list")
+    if suffix == ".csv":
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            return [dict(row) for row in csv.DictReader(handle)]
+    raise ValueError(f"Unsupported train data format: {path.suffix}")
+
+
+def _record_to_text(record: dict[str, Any]) -> str:
+    if record.get("text"):
+        return str(record["text"])
+    prompt = record.get("prompt") or record.get("instruction") or record.get("input")
+    completion = record.get("completion") or record.get("response") or record.get("output")
+    if prompt and completion:
+        return f"{prompt}\n{completion}"
+    if completion:
+        return str(completion)
+    raise ValueError("Each training record must include 'text' or prompt/completion-style fields")
 
 
 def run_training(config_path: str) -> Path:
-    """Run a placeholder LoRA training flow and return the output directory."""
+    """Run LoRA training flow and return the train artifact directory."""
+    transformers = importlib.import_module("transformers")
+    peft = importlib.import_module("peft")
+    torch = importlib.import_module("torch")
+
     config = _load_config(config_path)
+    config["config_path"] = str(config_path)
     params = _get_config_params(config)
-    run_id = _build_run_id()
+    run_id = str(params["run_id"] or _build_run_id())
+    run_dir = Path(str(params["output_dir"])) / run_id
+    train_dir = run_dir / "train"
+    train_dir.mkdir(parents=True, exist_ok=True)
+
+    if not params["base_model_path"]:
+        raise ValueError("base_model_path (or model_name_or_path) must be set in config")
+    if not params["train_data_path"]:
+        raise ValueError("train_data_path (or data.train_path) must be set in config")
+
+    tokenizer = transformers.AutoTokenizer.from_pretrained(str(params["base_model_path"]))
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    dtype_map = {
+        "auto": "auto",
+        "float16": torch.float16,
+        "bfloat16": torch.bfloat16,
+        "float32": torch.float32,
+    }
+    resolved_dtype = dtype_map.get(str(params["torch_dtype"]).lower(), "auto")
+
+    model = transformers.AutoModelForCausalLM.from_pretrained(
+        str(params["base_model_path"]),
+        device_map=params["device_map"],
+        torch_dtype=resolved_dtype,
+    )
+
+    lora_config = peft.LoraConfig(
+        r=params["lora_rank"],
+        lora_alpha=params["lora_alpha"],
+        lora_dropout=params["lora_dropout"],
+        bias=params["lora_bias"],
+        task_type=peft.TaskType.CAUSAL_LM,
+        target_modules=params["lora_target_modules"],
+    )
+    model = peft.get_peft_model(model, lora_config)
+
+    train_records = _load_records(Path(str(params["train_data_path"])))
+    train_texts = [_record_to_text(record) for record in train_records]
+
+    class TokenizedDataset(torch.utils.data.Dataset):  # type: ignore[misc, valid-type]
+        def __init__(self, texts: list[str]) -> None:
+            self.examples = []
+            for text in texts:
+                encoded = tokenizer(
+                    text,
+                    truncation=True,
+                    max_length=params["max_seq_len"],
+                    padding="max_length",
+                )
+                encoded["labels"] = list(encoded["input_ids"])
+                self.examples.append(encoded)
+
+        def __len__(self) -> int:
+            return len(self.examples)
+
+        def __getitem__(self, index: int) -> dict[str, Any]:
+            item = self.examples[index]
+            return {
+                "input_ids": torch.tensor(item["input_ids"], dtype=torch.long),
+                "attention_mask": torch.tensor(item["attention_mask"], dtype=torch.long),
+                "labels": torch.tensor(item["labels"], dtype=torch.long),
+            }
+
+    train_dataset = TokenizedDataset(train_texts)
+    eval_dataset = None
+    if params["eval_data_path"]:
+        eval_records = _load_records(Path(str(params["eval_data_path"])))
+        eval_texts = [_record_to_text(record) for record in eval_records]
+        eval_dataset = TokenizedDataset(eval_texts)
+
+    eval_strategy = "steps" if eval_dataset is not None else "no"
+
+    training_args = transformers.TrainingArguments(
+        output_dir=str(train_dir / "checkpoints"),
+        num_train_epochs=float(params["epochs"]),
+        per_device_train_batch_size=params["batch_size"],
+        gradient_accumulation_steps=params["gradient_accumulation_steps"],
+        learning_rate=params["learning_rate"],
+        logging_steps=params["logging_steps"],
+        eval_strategy=eval_strategy,
+        eval_steps=params["eval_steps"],
+        save_steps=params["save_steps"],
+        weight_decay=params["weight_decay"],
+        warmup_ratio=params["warmup_ratio"],
+        seed=params["seed"],
+        report_to=[],
+        remove_unused_columns=False,
+    )
+
+    trainer = transformers.Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
+        tokenizer=tokenizer,
+    )
+
+    train_result = trainer.train()
+    training_metrics = train_result.metrics if train_result and train_result.metrics else {}
+
+    adapter_dir = train_dir / "adapter"
+    model.save_pretrained(adapter_dir)
+    tokenizer.save_pretrained(train_dir / "tokenizer")
 
     metrics = {
-        "status": "completed",
-        "train_loss": 0.0,
-        "epochs_completed": params["epochs"],
-        "checkpoint": "adapter_checkpoint.bin",
+        "train_runtime": float(training_metrics.get("train_runtime", 0.0)),
+        "train_loss": float(training_metrics.get("train_loss", 0.0)),
+        "steps": int(training_metrics.get("global_step", 0)),
+        "epochs_completed": float(training_metrics.get("epoch", params["epochs"])),
     }
 
-    run_dir = _persist_run_outputs(run_id=run_id, params=params, metrics=metrics)
-    return run_dir
+    _persist_run_outputs(run_dir=run_dir, params=params, metrics=metrics)
+    return train_dir
 
 
 def main(argv: Sequence[str] | None = None) -> None:
