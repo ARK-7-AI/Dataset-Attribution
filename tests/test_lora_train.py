@@ -8,39 +8,39 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from src.attribution.gradient_logger import run_gradient_logging
 from src.training import lora_train
 from src.training.lora_train import parse_args, run_training
 
 
-def test_parse_args_reads_config_path() -> None:
-    args = parse_args(["--config", "configs/train_lora.yaml"])
-    assert args.config == "configs/train_lora.yaml"
-
-
-def test_run_training_writes_expected_artifacts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+@pytest.fixture
+def tiny_dataset_and_config(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Create tiny synthetic dataset/config artifacts for bounded training tests."""
     dataset_path = tmp_path / "dataset.json"
     dataset_path.write_text(
-        json.dumps([
-            {"sample_id": "s1", "prompt": "Prompt 1", "response": "Response 1"},
-            {"sample_id": "s2", "prompt": "Prompt 2", "response": "Response 2"},
-        ]),
+        json.dumps(
+            [
+                {"sample_id": "s1", "prompt": "Prompt 1", "response": "Response 1"},
+                {"sample_id": "s2", "prompt": "Prompt 2", "response": "Response 2"},
+            ]
+        ),
         encoding="utf-8",
     )
 
-    splits_dir = tmp_path / "runs" / "testrun" / "splits"
+    run_id = "testrun"
+    run_root = tmp_path / "runs" / run_id
+    splits_dir = run_root / "splits"
     splits_dir.mkdir(parents=True, exist_ok=True)
     (splits_dir / "train.csv").write_text("sample_id\ns1\ns2\n", encoding="utf-8")
-    (splits_dir / "test.csv").write_text("sample_id\ns2\n", encoding="utf-8")
+
     config_path = tmp_path / "train_lora.yaml"
     config_path.write_text(
         "\n".join(
             [
                 "experiment_name: test",
                 "model_name_or_path: fake-model",
-                "run_id: testrun",
-                f"output_root: {tmp_path.as_posix()}/runs",
+                f"run_id: {run_id}",
+                f"output_root: {(tmp_path / 'runs').as_posix()}",
                 "data:",
                 f"  dataset_json_path: {dataset_path.as_posix()}",
                 f"  train_manifest_path: {splits_dir.as_posix()}/train.csv",
@@ -50,11 +50,13 @@ def test_run_training_writes_expected_artifacts(
                 "lora:",
                 "  rank: 4",
                 "  alpha: 8",
-                "  dropout: 0.0",
+                "  dropout: 0.1",
+                "  bias: none",
                 "training:",
                 "  batch_size: 1",
                 "  learning_rate: 0.001",
                 "  epochs: 1",
+                "  max_steps: 2",
                 "  gradient_accumulation_steps: 1",
                 "  warmup_ratio: 0.0",
                 "  weight_decay: 0.0",
@@ -68,6 +70,13 @@ def test_run_training_writes_expected_artifacts(
         ),
         encoding="utf-8",
     )
+
+    return dataset_path, run_root, config_path
+
+
+@pytest.fixture
+def patch_training_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Patch heavy training imports with tiny, deterministic fakes."""
 
     class FakeTensor:
         def __init__(self, value: object) -> None:
@@ -121,14 +130,19 @@ def test_run_training_writes_expected_artifacts(
             pass
 
     class FakeTrainResult:
-        metrics = {"train_runtime": 1.5, "train_loss": 0.25, "global_step": 2, "epoch": 1.0}
+        metrics = {
+            "train_runtime": 1.5,
+            "train_loss": 0.25,
+            "global_step": 2,
+            "epoch": 1.0,
+        }
 
     class FakeTrainer:
         def __init__(self, **_: object) -> None:
             self.state = type(
                 "FakeState",
                 (),
-                {"to_dict": lambda self: {"global_step": 2, "log_history": [{"loss": 0.25}]}}
+                {"to_dict": lambda self: {"global_step": 2, "log_history": [{"loss": 0.25}]}},
             )()
 
         def train(self) -> FakeTrainResult:
@@ -154,7 +168,6 @@ def test_run_training_writes_expected_artifacts(
         def get_peft_model(model: FakeModel, _: object) -> FakeModel:
             return model
 
-
     class FakeDataset:
         def __init__(self, rows: list[dict[str, object]]) -> None:
             self.rows = rows
@@ -165,6 +178,7 @@ def test_run_training_writes_expected_artifacts(
 
     class FakeDatasets:
         Dataset = FakeDataset
+
     def fake_import_module(name: str) -> object:
         mapping = {
             "transformers": FakeTransformers,
@@ -176,7 +190,22 @@ def test_run_training_writes_expected_artifacts(
 
     monkeypatch.setattr(lora_train.importlib, "import_module", fake_import_module)
 
+
+def test_parse_args_reads_config_path() -> None:
+    args = parse_args(["--config", "configs/train_lora.yaml"])
+    assert args.config == "configs/train_lora.yaml"
+
+
+def test_run_training_writes_expected_artifacts(
+    tiny_dataset_and_config: tuple[Path, Path, Path],
+    patch_training_runtime: None,
+) -> None:
+    _, _, config_path = tiny_dataset_and_config
+
     run_dir = run_training(str(config_path))
+
+    metrics = json.loads((run_dir / "metrics.json").read_text(encoding="utf-8"))
+    params = json.loads((run_dir / "params.json").read_text(encoding="utf-8"))
 
     assert run_dir.exists()
     assert (run_dir / "params.json").exists()
@@ -185,3 +214,53 @@ def test_run_training_writes_expected_artifacts(
     assert (run_dir / "resolved_config.yaml").exists()
     assert (run_dir / "adapter" / "adapter_model.bin").exists()
     assert (run_dir / "tokenizer" / "tokenizer.json").exists()
+
+    assert metrics["train_runtime"] > 0
+    assert metrics["train_loss"] > 0
+    assert metrics["steps"] > 0
+    assert metrics["epochs_completed"] > 0
+
+    assert params["lora_rank"] == 4
+    assert params["lora_alpha"] == 8.0
+    assert params["lora_dropout"] == 0.1
+    assert params["lora_bias"] == "none"
+
+
+def test_lora_training_outputs_are_gradient_logger_compatible(
+    tiny_dataset_and_config: tuple[Path, Path, Path],
+    patch_training_runtime: None,
+    tmp_path: Path,
+) -> None:
+    _, run_root, config_path = tiny_dataset_and_config
+    run_dir = run_training(str(config_path))
+
+    attribution_config = tmp_path / "attribution.yaml"
+    attribution_config.write_text(
+        "\n".join(
+            [
+                "run_id: testrun",
+                f"output_root: {(tmp_path / 'runs').as_posix()}",
+                "model_name_or_path: fake-model",
+                "gradients:",
+                "  gradient_subset_size: 2",
+                "  lora_only: true",
+                "  save_format: npy",
+                "  max_seq_len: 64",
+                "  batch_size: 1",
+                "  dtype: float32",
+                "  layer_filter: lora",
+                "seed: 42",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    gradients_dir = run_gradient_logging(attribution_config)
+    metadata = json.loads((gradients_dir / "metadata.json").read_text(encoding="utf-8"))
+
+    assert run_dir == run_root / "train"
+    assert (gradients_dir / "subset_manifest.csv").exists()
+    assert metadata["lora_only"] is True
+    assert metadata["adapter_artifact"] == str(run_dir / "adapter")
+    assert metadata["gradient_subset_size"] == 2
+    assert metadata["parameter_names"]
