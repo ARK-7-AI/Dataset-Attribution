@@ -1,12 +1,53 @@
 # LoRA training configuration
 experiment_name: baseline_lora
-base_model_path: llama3.2:3b
+
+# Base model/tokenizer
+model_name_or_path: meta-llama/Llama-3.2-3B-Instruct
+tokenizer_name_or_path: null # optional override (defaults to model_name_or_path)
+
+# Run output routing
+output_root: outputs/runs
+run_id: null
+auto_run_id: true
+
+# LoRA adapter settings
 lora:
   rank: 8
   alpha: 16
   dropout: 0.05
+  target_modules: null
+  bias: none
+
+# Dataset wiring
+data:
+  dataset_json_path: data/processed/dataset.json
+  train_manifest_path: outputs/runs/<run_id>/splits/train.csv
+  eval_manifest_path: outputs/runs/<run_id>/splits/test.csv # optional
+
+  # Field mapping used to build supervised examples
+  text_fields: [text, instruction]
+  prompt_field: prompt
+  response_field: response
+
 training:
   batch_size: 4
   learning_rate: 0.0002
   epochs: 3
+  gradient_accumulation_steps: 1
+  max_steps: null # optional override; if set > 0, takes precedence over epochs
+  warmup_ratio: 0.03
+  weight_decay: 0.01
+  lr_scheduler_type: cosine
+
+  # Exactly one precision mode should be enabled
+  fp16: false
+  bf16: true
+
+  max_seq_len: 512
+  logging_steps: 10
+  save_steps: 100
+  eval_steps: 100
+  eval_strategy: steps # one of: no, steps, epoch
+
 seed: 42
+device_map: auto
