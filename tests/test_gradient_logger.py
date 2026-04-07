@@ -31,8 +31,8 @@ def _write_train_manifest(path: Path, count: int) -> None:
 
 def test_gradient_logger_creates_expected_artifacts_for_600_subset(tmp_path: Path) -> None:
     run_root = tmp_path / "outputs" / "runs" / "unit-run"
-    (run_root / "train").mkdir(parents=True, exist_ok=True)
-    (run_root / "train" / "adapter_checkpoint.bin").write_bytes(b"adapter")
+    (run_root / "train" / "adapter").mkdir(parents=True, exist_ok=True)
+    (run_root / "train" / "adapter" / "adapter_model.bin").write_bytes(b"adapter")
     _write_train_manifest(run_root / "splits" / "train.csv", count=3600)
 
     config_path = tmp_path / "attribution.yaml"
@@ -78,3 +78,27 @@ def test_gradient_logger_creates_expected_artifacts_for_600_subset(tmp_path: Pat
     assert payload["gradient_subset_size"] == 600
     assert payload["lora_only"] is True
     assert payload["save_format"] == "npy"
+    assert payload["adapter_artifact"].endswith("/train/adapter")
+
+
+def test_gradient_logger_supports_legacy_adapter_checkpoint(tmp_path: Path) -> None:
+    run_root = tmp_path / "outputs" / "runs" / "legacy-run"
+    (run_root / "train").mkdir(parents=True, exist_ok=True)
+    (run_root / "train" / "adapter_checkpoint.bin").write_bytes(b"adapter")
+    _write_train_manifest(run_root / "splits" / "train.csv", count=10)
+
+    config_path = tmp_path / "attribution_legacy.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "run_id": "legacy-run",
+                "output_root": str(tmp_path / "outputs" / "runs"),
+                "gradients": {"gradient_subset_size": 5},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    gradients_dir = run_gradient_logging(config_path)
+    payload = json.loads((gradients_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert payload["adapter_artifact"].endswith("/train/adapter_checkpoint.bin")

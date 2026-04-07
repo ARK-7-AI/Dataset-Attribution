@@ -38,11 +38,15 @@ def test_run_training_writes_expected_artifacts(
         "\n".join(
             [
                 "experiment_name: test",
-                "base_model_path: fake-model",
+                "model_name_or_path: fake-model",
                 "run_id: testrun",
                 f"output_root: {tmp_path.as_posix()}/runs",
                 "data:",
-                f"  path: {dataset_path.as_posix()}",
+                f"  dataset_json_path: {dataset_path.as_posix()}",
+                f"  train_manifest_path: {splits_dir.as_posix()}/train.csv",
+                "  text_fields: [prompt, response]",
+                "  prompt_field: prompt",
+                "  response_field: response",
                 "lora:",
                 "  rank: 4",
                 "  alpha: 8",
@@ -51,6 +55,14 @@ def test_run_training_writes_expected_artifacts(
                 "  batch_size: 1",
                 "  learning_rate: 0.001",
                 "  epochs: 1",
+                "  gradient_accumulation_steps: 1",
+                "  warmup_ratio: 0.0",
+                "  weight_decay: 0.0",
+                "  lr_scheduler_type: linear",
+                "  logging_steps: 1",
+                "  save_steps: 1",
+                "  eval_strategy: 'no'",
+                "  fp16: true",
                 "seed: 42",
             ]
         ),
@@ -113,7 +125,11 @@ def test_run_training_writes_expected_artifacts(
 
     class FakeTrainer:
         def __init__(self, **_: object) -> None:
-            pass
+            self.state = type(
+                "FakeState",
+                (),
+                {"to_dict": lambda self: {"global_step": 2, "log_history": [{"loss": 0.25}]}}
+            )()
 
         def train(self) -> FakeTrainResult:
             return FakeTrainResult()
@@ -165,4 +181,7 @@ def test_run_training_writes_expected_artifacts(
     assert run_dir.exists()
     assert (run_dir / "params.json").exists()
     assert (run_dir / "metrics.json").exists()
+    assert (run_dir / "trainer_state.json").exists()
+    assert (run_dir / "resolved_config.yaml").exists()
     assert (run_dir / "adapter" / "adapter_model.bin").exists()
+    assert (run_dir / "tokenizer" / "tokenizer.json").exists()

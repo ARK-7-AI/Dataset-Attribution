@@ -125,11 +125,21 @@ def _gradient_matrix(sample_ids: list[str], parameter_names: list[str], seed: in
     return matrix
 
 
-def _ensure_adapter_checkpoint(run_root: Path) -> Path:
-    checkpoint = run_root / "train" / "adapter_checkpoint.bin"
-    if not checkpoint.exists():
-        raise FileNotFoundError(f"Adapter checkpoint not found: {checkpoint}")
-    return checkpoint
+def _resolve_adapter_artifact(run_root: Path) -> Path:
+    """Resolve adapter artifact path for both new and legacy layouts."""
+    train_dir = run_root / "train"
+    adapter_dir = train_dir / "adapter"
+    if adapter_dir.is_dir():
+        return adapter_dir
+
+    legacy_checkpoint = train_dir / "adapter_checkpoint.bin"
+    if legacy_checkpoint.is_file():
+        return legacy_checkpoint
+
+    raise FileNotFoundError(
+        "Adapter artifact not found. Expected either "
+        f"directory: {adapter_dir} or file: {legacy_checkpoint}"
+    )
 
 
 def run_gradient_logging(config_path: str | Path) -> Path:
@@ -137,7 +147,7 @@ def run_gradient_logging(config_path: str | Path) -> Path:
 
     config = _load_config(config_path)
     run_root = config.output_root / config.run_id
-    _ensure_adapter_checkpoint(run_root)
+    adapter_artifact = _resolve_adapter_artifact(run_root)
 
     train_manifest = run_root / "splits" / "train.csv"
     all_train_sample_ids = _read_train_sample_ids(train_manifest)
@@ -191,7 +201,7 @@ def run_gradient_logging(config_path: str | Path) -> Path:
         "save_format": config.save_format,
         "max_seq_len": config.max_seq_len,
         "batch_size": config.batch_size,
-        "adapter_checkpoint": str(run_root / "train" / "adapter_checkpoint.bin"),
+        "adapter_artifact": str(adapter_artifact),
         "parameter_names": parameter_names,
         "gradient_files": saved_gradient_files,
     }
