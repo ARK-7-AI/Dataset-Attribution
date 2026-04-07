@@ -95,15 +95,38 @@ def test_read_dataset_json_wrapped_data_input(tmp_path: Path) -> None:
     assert loaded == records
 
 
-def test_read_dataset_missing_required_key_fails(tmp_path: Path) -> None:
+def test_read_dataset_missing_required_keys_are_defaulted(tmp_path: Path) -> None:
     dataset_path = tmp_path / "dataset.json"
     dataset_path.write_text(
         json.dumps([{"sample_id": "sample-1", "source": "source_a", "text": "missing license"}]),
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match=r"index 0: missing required keys: license"):
-        read_dataset(dataset_path)
+    loaded = read_dataset(dataset_path)
+    assert loaded[0]["sample_id"] == "sample-1"
+    assert loaded[0]["source"] == "source_a"
+    assert loaded[0]["license"] == "unknown"
+
+
+def test_read_dataset_instruction_format_defaults_required_keys(tmp_path: Path) -> None:
+    dataset_path = tmp_path / "dataset.json"
+    dataset_path.write_text(
+        json.dumps(
+            [
+                {
+                    "instruction": "Give three tips for staying healthy.",
+                    "input": "",
+                    "output": "Eat balanced meals, exercise, and sleep well.",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = read_dataset(dataset_path)
+    assert loaded[0]["sample_id"] == "sample-0"
+    assert loaded[0]["source"] == "unknown"
+    assert loaded[0]["license"] == "unknown"
 
 
 def test_read_dataset_unsupported_extension_fails(tmp_path: Path) -> None:

@@ -84,12 +84,20 @@ def _validate_dataset_rows(rows: list[Mapping[str, Any]]) -> None:
     if not rows:
         raise ValueError("Dataset must contain at least one row")
 
-    required_keys = ("sample_id", "source", "license")
     for index, row in enumerate(rows):
-        missing_keys = [key for key in required_keys if key not in row]
-        if missing_keys:
-            missing_str = ", ".join(missing_keys)
-            raise ValueError(f"Invalid dataset row at index {index}: missing required keys: {missing_str}")
+        if not isinstance(row, Mapping):
+            raise ValueError(f"Invalid dataset row at index {index}: row must be a mapping")
+
+
+def _ensure_required_columns(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    normalized: list[dict[str, str]] = []
+    for index, row in enumerate(rows):
+        enriched = dict(row)
+        enriched.setdefault("sample_id", f"sample-{index}")
+        enriched.setdefault("source", "unknown")
+        enriched.setdefault("license", "unknown")
+        normalized.append(enriched)
+    return normalized
 
 
 def read_dataset(dataset_path: str | Path) -> list[dict[str, str]]:
@@ -103,7 +111,7 @@ def read_dataset(dataset_path: str | Path) -> list[dict[str, str]]:
             reader = csv.DictReader(handle)
             rows = [dict(row) for row in reader]
         _validate_dataset_rows(rows)
-        return rows
+        return _ensure_required_columns(rows)
 
     if suffix == ".json":
         with path.open("r", encoding="utf-8") as handle:
@@ -129,7 +137,7 @@ def read_dataset(dataset_path: str | Path) -> list[dict[str, str]]:
             rows.append(_coerce_record(dict(item)))
 
         _validate_dataset_rows(rows)
-        return rows
+        return _ensure_required_columns(rows)
 
     raise ValueError(f"Unsupported dataset format for '{path.name}'. Use .csv or .json")
 

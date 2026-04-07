@@ -29,4 +29,7 @@ This keeps execution consistent across local runs, CI, and future script wrapper
   - a list of objects, e.g. `[{"sample_id": "...", "source": "...", "license": "..."}]`, or
   - a wrapped object with `data`, e.g. `{"data": [{"sample_id": "...", "source": "...", "license": "..."}]}`.
 
-Each row must include at least `sample_id`, `source`, and `license`.
+If `sample_id`, `source`, or `license` are missing, defaults are auto-filled as:
+- `sample_id`: `sample-{row_index}`
+- `source`: `unknown`
+- `license`: `unknown`
