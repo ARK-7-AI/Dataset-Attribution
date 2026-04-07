@@ -42,7 +42,13 @@ def test_loader_fails_when_split_has_unknown_id(tmp_path: Path, monkeypatch: pyt
     config = {
         "run_id": "run-a",
         "output_root": str(tmp_path / "runs"),
-        "data": {"path": str(dataset_path)},
+        "data": {
+            "path": str(dataset_path),
+            "train_manifest_path": str(splits_dir / "train.csv"),
+            "text_fields": ["prompt", "response"],
+            "prompt_field": "prompt",
+            "response_field": "response",
+        },
         "training": {"max_seq_len": 8},
     }
 
