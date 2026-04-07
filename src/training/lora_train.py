@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from argparse import ArgumentParser, Namespace
-import csv
 from datetime import datetime, timezone
 import importlib
 import json
@@ -12,6 +11,8 @@ from typing import Any, Sequence
 from uuid import uuid4
 
 import yaml
+
+from src.training.data_loader import load_instruction_datasets
 
 
 def build_parser() -> ArgumentParser:
@@ -106,39 +107,6 @@ def _persist_run_outputs(
     return train_dir
 
 
-def _load_records(path: Path) -> list[dict[str, Any]]:
-    suffix = path.suffix.lower()
-    if suffix == ".jsonl":
-        rows: list[dict[str, Any]] = []
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                rows.append(json.loads(line))
-        return rows
-    if suffix == ".json":
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(payload, dict) and isinstance(payload.get("data"), list):
-            return [dict(item) for item in payload["data"]]
-        if isinstance(payload, list):
-            return [dict(item) for item in payload]
-        raise ValueError("JSON train data must be a list or object with a 'data' list")
-    if suffix == ".csv":
-        with path.open("r", encoding="utf-8", newline="") as handle:
-            return [dict(row) for row in csv.DictReader(handle)]
-    raise ValueError(f"Unsupported train data format: {path.suffix}")
-
-
-def _record_to_text(record: dict[str, Any]) -> str:
-    if record.get("text"):
-        return str(record["text"])
-    prompt = record.get("prompt") or record.get("instruction") or record.get("input")
-    completion = record.get("completion") or record.get("response") or record.get("output")
-    if prompt and completion:
-        return f"{prompt}\n{completion}"
-    if completion:
-        return str(completion)
-    raise ValueError("Each training record must include 'text' or prompt/completion-style fields")
-
-
 def run_training(config_path: str) -> Path:
     """Run LoRA training flow and return the train artifact directory."""
     transformers = importlib.import_module("transformers")
@@ -155,9 +123,6 @@ def run_training(config_path: str) -> Path:
 
     if not params["base_model_path"]:
         raise ValueError("base_model_path (or model_name_or_path) must be set in config")
-    if not params["train_data_path"]:
-        raise ValueError("train_data_path (or data.train_path) must be set in config")
-
     tokenizer = transformers.AutoTokenizer.from_pretrained(str(params["base_model_path"]))
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -186,39 +151,7 @@ def run_training(config_path: str) -> Path:
     )
     model = peft.get_peft_model(model, lora_config)
 
-    train_records = _load_records(Path(str(params["train_data_path"])))
-    train_texts = [_record_to_text(record) for record in train_records]
-
-    class TokenizedDataset(torch.utils.data.Dataset):  # type: ignore[misc, valid-type]
-        def __init__(self, texts: list[str]) -> None:
-            self.examples = []
-            for text in texts:
-                encoded = tokenizer(
-                    text,
-                    truncation=True,
-                    max_length=params["max_seq_len"],
-                    padding="max_length",
-                )
-                encoded["labels"] = list(encoded["input_ids"])
-                self.examples.append(encoded)
-
-        def __len__(self) -> int:
-            return len(self.examples)
-
-        def __getitem__(self, index: int) -> dict[str, Any]:
-            item = self.examples[index]
-            return {
-                "input_ids": torch.tensor(item["input_ids"], dtype=torch.long),
-                "attention_mask": torch.tensor(item["attention_mask"], dtype=torch.long),
-                "labels": torch.tensor(item["labels"], dtype=torch.long),
-            }
-
-    train_dataset = TokenizedDataset(train_texts)
-    eval_dataset = None
-    if params["eval_data_path"]:
-        eval_records = _load_records(Path(str(params["eval_data_path"])))
-        eval_texts = [_record_to_text(record) for record in eval_records]
-        eval_dataset = TokenizedDataset(eval_texts)
+    train_dataset, eval_dataset = load_instruction_datasets(config=config, tokenizer=tokenizer)
 
     eval_strategy = "steps" if eval_dataset is not None else "no"
 

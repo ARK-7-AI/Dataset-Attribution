@@ -20,19 +20,29 @@ def test_parse_args_reads_config_path() -> None:
 def test_run_training_writes_expected_artifacts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    train_data = tmp_path / "train.jsonl"
-    train_data.write_text(
-        json.dumps({"text": "sample 1"}) + "\n" + json.dumps({"text": "sample 2"}) + "\n",
+    dataset_path = tmp_path / "dataset.json"
+    dataset_path.write_text(
+        json.dumps([
+            {"sample_id": "s1", "prompt": "Prompt 1", "response": "Response 1"},
+            {"sample_id": "s2", "prompt": "Prompt 2", "response": "Response 2"},
+        ]),
         encoding="utf-8",
     )
+
+    splits_dir = tmp_path / "runs" / "testrun" / "splits"
+    splits_dir.mkdir(parents=True, exist_ok=True)
+    (splits_dir / "train.csv").write_text("sample_id\ns1\ns2\n", encoding="utf-8")
+    (splits_dir / "test.csv").write_text("sample_id\ns2\n", encoding="utf-8")
     config_path = tmp_path / "train_lora.yaml"
     config_path.write_text(
         "\n".join(
             [
                 "experiment_name: test",
                 "base_model_path: fake-model",
-                f"output_dir: {tmp_path.as_posix()}/runs",
-                f"train_data_path: {train_data.as_posix()}",
+                "run_id: testrun",
+                f"output_root: {tmp_path.as_posix()}/runs",
+                "data:",
+                f"  path: {dataset_path.as_posix()}",
                 "lora:",
                 "  rank: 4",
                 "  alpha: 8",
@@ -128,8 +138,24 @@ def test_run_training_writes_expected_artifacts(
         def get_peft_model(model: FakeModel, _: object) -> FakeModel:
             return model
 
+
+    class FakeDataset:
+        def __init__(self, rows: list[dict[str, object]]) -> None:
+            self.rows = rows
+
+        @classmethod
+        def from_list(cls, rows: list[dict[str, object]]) -> "FakeDataset":
+            return cls(rows)
+
+    class FakeDatasets:
+        Dataset = FakeDataset
     def fake_import_module(name: str) -> object:
-        mapping = {"transformers": FakeTransformers, "peft": FakePeft, "torch": FakeTorch}
+        mapping = {
+            "transformers": FakeTransformers,
+            "peft": FakePeft,
+            "torch": FakeTorch,
+            "datasets": FakeDatasets,
+        }
         return mapping[name]
 
     monkeypatch.setattr(lora_train.importlib, "import_module", fake_import_module)
