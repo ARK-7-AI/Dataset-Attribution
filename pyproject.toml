@@ -8,7 +8,14 @@ version = "0.1.0"
 description = "Dataset attribution for LoRA fine-tuned LLMs."
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["PyYAML>=6.0"]
+dependencies = [
+  "transformers",
+  "peft",
+  "accelerate",
+  "datasets",
+  "torch",
+  "pyyaml>=6.0",
+]
 
 [tool.setuptools]
 package-dir = {"" = "."}

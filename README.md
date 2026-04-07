@@ -33,3 +33,70 @@ If `sample_id`, `source`, or `license` are missing, defaults are auto-filled as:
 - `sample_id`: `sample-{row_index}`
 - `source`: `unknown`
 - `license`: `unknown`
+
+## LoRA data pipeline run order
+
+Run data splitting **before** training so manifests exist at `outputs/runs/<run_id>/splits/*.csv` and training can resolve `data.train_manifest_path` / `data.eval_manifest_path`.
+
+1. Split stage (first): load `configs/data.yaml`, select/subsample rows if configured, then write `train.csv`, `test.csv`, and `shadow.csv` into `outputs/runs/<run_id>/splits/`.
+2. Training stage (second): load `configs/train_lora.yaml`, resolve `<run_id>` inside manifest paths, and train against the generated split manifests.
+
+## Exact command to start LoRA training
+
+```bash
+python -m src.training.lora_train --config configs/train_lora.yaml
+```
+
+(Equivalent wrapper script: `bash scripts/run_lora.sh`.)
+
+## Expected output artifacts and where to find `run_id`
+
+After training finishes, artifacts are written under:
+
+- `outputs/runs/<run_id>/train/params.json` — resolved run parameters (includes the canonical `run_id`).
+- `outputs/runs/<run_id>/train/metrics.json` — summarized training metrics.
+- `outputs/runs/<run_id>/train/trainer_state.json` — Trainer state/log history.
+- `outputs/runs/<run_id>/train/resolved_config.yaml` — frozen config used by this run.
+- `outputs/runs/<run_id>/train/adapter/` — LoRA adapter weights.
+- `outputs/runs/<run_id>/train/tokenizer/` — tokenizer files used/saved during training.
+- `outputs/runs/<run_id>/train/checkpoints/` — Hugging Face Trainer checkpoints.
+
+How to find `run_id`:
+
+- If `run_id` is explicitly set in `configs/train_lora.yaml`, that value is used.
+- If `auto_run_id: true` and `run_id: null`, a UTC timestamp+suffix is generated.
+- Read `outputs/runs/<run_id>/train/params.json` and inspect its `run_id` field (or use the path printed at the end of training).
+
+## GPU/CPU notes and troubleshooting
+
+### Device selection
+
+- `device_map: auto` (default in `configs/train_lora.yaml`) lets Transformers place model weights automatically, typically preferring GPU when available.
+- For CPU-only runs, set `device_map: cpu` in the training config.
+
+### OOM (Out Of Memory)
+
+If you hit CUDA OOM or host RAM pressure:
+
+- Reduce `training.batch_size`.
+- Increase `training.gradient_accumulation_steps` to preserve effective batch size.
+- Reduce `training.max_seq_len`.
+- Prefer a smaller base model.
+- Use lower precision (`torch_dtype: float16` or `bfloat16` when hardware supports it).
+
+### Tokenizer pad token
+
+If your tokenizer has no pad token, this training entrypoint auto-falls back to EOS by setting:
+
+- `tokenizer.pad_token = tokenizer.eos_token`
+
+This avoids common collation/padding failures for decoder-only models.
+
+### Dtype settings (`torch_dtype`, `fp16`, `bf16`)
+
+- `torch_dtype` controls model load dtype and supports: `auto`, `float16`, `bfloat16`, `float32`.
+- In `training`, enable **exactly one** of:
+  - `fp16: true` (with `bf16: false`), or
+  - `bf16: true` (with `fp16: false`).
+- If your GPU does not support bf16, use fp16 or float32.
+- If you see instability/NaNs, try `torch_dtype: float32`, disable mixed precision, and lower the learning rate.
