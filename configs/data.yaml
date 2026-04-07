@@ -2,6 +2,13 @@ run_id: default_run
 output_root: outputs/runs
 
 dataset:
+  # Supported file types for dataset.path:
+  # - CSV:  data/dataset.csv
+  # - JSON: data/dataset.json
+  #   * list form:   [{"sample_id":"...","source":"...","license":"..."}]
+  #   * wrapped form:{"data":[{"sample_id":"...","source":"...","license":"..."}]}
+  # Missing sample_id/source/license are auto-filled:
+  # sample_id=sample-{row_index}, source=unknown, license=unknown
   path: data/dataset.csv
   subset_size: 3000
 
