@@ -1,0 +1,13 @@
+run_id: default_run
+output_root: outputs/runs
+model_name_or_path: llama3.2:3b
+seed: 2026
+
+gradients:
+  gradient_subset_size: 600
+  lora_only: true
+  save_format: npy
+  max_seq_len: 1024
+  batch_size: 32
+  dtype: float32
+  layer_filter: lora
