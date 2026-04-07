@@ -176,6 +176,8 @@ def _persist_run_outputs(
     run_dir: Path,
     params: dict[str, Any],
     metrics: dict[str, Any],
+    config: dict[str, Any],
+    trainer_state: dict[str, Any] | None = None,
 ) -> Path:
     """Persist train artifacts for a run and return run directory."""
     train_dir = run_dir / "train"
@@ -183,9 +185,14 @@ def _persist_run_outputs(
 
     params_path = train_dir / "params.json"
     metrics_path = train_dir / "metrics.json"
+    trainer_state_path = train_dir / "trainer_state.json"
+    resolved_config_path = train_dir / "resolved_config.yaml"
 
     params_path.write_text(json.dumps(params, indent=2), encoding="utf-8")
     metrics_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+    trainer_state_payload = trainer_state if trainer_state is not None else {}
+    trainer_state_path.write_text(json.dumps(trainer_state_payload, indent=2), encoding="utf-8")
+    resolved_config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
 
     return train_dir
 
@@ -292,7 +299,23 @@ def run_training(config_path: str) -> Path:
         "epochs_completed": float(training_metrics.get("epoch", params["epochs"])),
     }
 
-    _persist_run_outputs(run_dir=run_dir, params=params, metrics=metrics)
+    trainer_state_payload: dict[str, Any] | None = None
+    trainer_state = getattr(trainer, "state", None)
+    if trainer_state is not None:
+        if hasattr(trainer_state, "to_dict"):
+            trainer_state_payload = trainer_state.to_dict()
+        else:
+            log_history = getattr(trainer_state, "log_history", None)
+            if log_history is not None:
+                trainer_state_payload = {"log_history": log_history}
+
+    _persist_run_outputs(
+        run_dir=run_dir,
+        params=params,
+        metrics=metrics,
+        config=config,
+        trainer_state=trainer_state_payload,
+    )
     return train_dir
 
 
