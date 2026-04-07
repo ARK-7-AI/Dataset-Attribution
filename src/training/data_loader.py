@@ -84,21 +84,33 @@ def _build_record_index(records: list[dict[str, Any]]) -> dict[str, dict[str, An
     return index
 
 
-def _normalize_example(sample_id: str, record: dict[str, Any]) -> dict[str, str]:
-    text = str(record.get("text") or "").strip()
-    prompt = str(record.get("prompt") or record.get("instruction") or "").strip()
-    response = str(record.get("response") or record.get("completion") or record.get("output") or "").strip()
+def _normalize_example(
+    sample_id: str,
+    record: dict[str, Any],
+    *,
+    text_fields: list[str],
+    prompt_field: str,
+    response_field: str,
+) -> dict[str, str]:
+    prompt = str(record.get(prompt_field) or "").strip()
+    response = str(record.get(response_field) or "").strip()
+    fallback_text = ""
+    for field in text_fields:
+        value = str(record.get(field) or "").strip()
+        if value:
+            fallback_text = value
+            break
 
-    if not prompt and text:
-        prompt = text
+    if not prompt and fallback_text:
+        prompt = fallback_text
 
     if not prompt:
         raise ValueError(
-            f"Sample '{sample_id}' is missing prompt text ('prompt'/'instruction'/'text')"
+            f"Sample '{sample_id}' is missing prompt text (prompt_field='{prompt_field}')"
         )
     if not response:
         raise ValueError(
-            f"Sample '{sample_id}' is missing target answer ('response'/'completion'/'output')"
+            f"Sample '{sample_id}' is missing target answer (response_field='{response_field}')"
         )
 
     prompt_text = PROMPT_TEMPLATE.format(instruction=prompt)
@@ -116,6 +128,10 @@ def _build_examples_for_split(
     split_name: str,
     sample_ids: list[str],
     record_index: dict[str, dict[str, Any]],
+    *,
+    text_fields: list[str],
+    prompt_field: str,
+    response_field: str,
 ) -> list[dict[str, str]]:
     missing = sorted(sample_id for sample_id in sample_ids if sample_id not in record_index)
     if missing:
@@ -126,7 +142,16 @@ def _build_examples_for_split(
             f"{preview}{suffix}"
         )
 
-    return [_normalize_example(sample_id, record_index[sample_id]) for sample_id in sample_ids]
+    return [
+        _normalize_example(
+            sample_id,
+            record_index[sample_id],
+            text_fields=text_fields,
+            prompt_field=prompt_field,
+            response_field=response_field,
+        )
+        for sample_id in sample_ids
+    ]
 
 
 def _tokenize_examples(
@@ -153,28 +178,53 @@ def load_instruction_datasets(config: dict[str, Any], tokenizer: Any) -> tuple[A
     train_cfg = config.get("training", {})
     data_cfg = config.get("data", {})
 
-    run_id = str(config.get("run_id") or "").strip()
-    if not run_id:
-        raise ValueError("Config must define 'run_id' for split-manifest loading")
-
-    output_root = Path(str(config.get("output_root") or config.get("output_dir") or "outputs/runs"))
-    splits_dir = output_root / run_id / "splits"
-
-    dataset_path_raw = data_cfg.get("path") or config.get("dataset_path")
+    dataset_path_raw = data_cfg.get("dataset_json_path") or data_cfg.get("path") or config.get("dataset_path")
     if not dataset_path_raw:
-        raise ValueError("Config must define original dataset JSON path at 'data.path' or 'dataset_path'")
+        raise ValueError(
+            "Config must define original dataset JSON path at 'data.dataset_json_path'"
+        )
     dataset_path = Path(str(dataset_path_raw))
+
+    train_manifest_raw = data_cfg.get("train_manifest_path")
+    if not train_manifest_raw:
+        raise ValueError("Config must define 'data.train_manifest_path'")
+    train_manifest_path = Path(str(train_manifest_raw))
+
+    eval_manifest_raw = data_cfg.get("eval_manifest_path")
+    eval_manifest_path = Path(str(eval_manifest_raw)) if eval_manifest_raw else None
+
+    text_fields = [str(field).strip() for field in data_cfg.get("text_fields", []) if str(field).strip()]
+    prompt_field = str(data_cfg.get("prompt_field") or "").strip()
+    response_field = str(data_cfg.get("response_field") or "").strip()
 
     max_seq_len = int(train_cfg.get("max_seq_len", 512))
 
     records = _read_dataset_records(dataset_path)
     record_index = _build_record_index(records)
 
-    train_ids = _read_split_ids(splits_dir / "train.csv", split_name="train")
-    test_ids = _read_split_ids(splits_dir / "test.csv", split_name="test")
+    train_ids = _read_split_ids(train_manifest_path, split_name="train")
+    test_ids = _read_split_ids(eval_manifest_path, split_name="test") if eval_manifest_path else []
 
-    train_examples = _build_examples_for_split("train", train_ids, record_index)
-    test_examples = _build_examples_for_split("test", test_ids, record_index) if test_ids else []
+    train_examples = _build_examples_for_split(
+        "train",
+        train_ids,
+        record_index,
+        text_fields=text_fields,
+        prompt_field=prompt_field,
+        response_field=response_field,
+    )
+    test_examples = (
+        _build_examples_for_split(
+            "test",
+            test_ids,
+            record_index,
+            text_fields=text_fields,
+            prompt_field=prompt_field,
+            response_field=response_field,
+        )
+        if test_ids
+        else []
+    )
 
     datasets_mod = importlib.import_module("datasets")
 
