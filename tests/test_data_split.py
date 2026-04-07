@@ -11,7 +11,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.data.split import SplitConfig, SplitRatios, create_splits, run_split, select_subset
+from src.data.split import SplitConfig, SplitRatios, create_splits, read_dataset, run_split, select_subset
 
 
 def _build_records(total: int = 100) -> list[dict[str, str]]:
@@ -77,7 +77,44 @@ def test_invalid_explicit_counts_raise() -> None:
 
 
 
-def test_read_dataset_json_support(tmp_path: Path) -> None:
+def test_read_dataset_json_list_input(tmp_path: Path) -> None:
+    records = _build_records(5)
+    dataset_path = tmp_path / "dataset.json"
+    dataset_path.write_text(json.dumps(records), encoding="utf-8")
+
+    loaded = read_dataset(dataset_path)
+    assert loaded == records
+
+
+def test_read_dataset_json_wrapped_data_input(tmp_path: Path) -> None:
+    records = _build_records(5)
+    dataset_path = tmp_path / "dataset.json"
+    dataset_path.write_text(json.dumps({"data": records}), encoding="utf-8")
+
+    loaded = read_dataset(dataset_path)
+    assert loaded == records
+
+
+def test_read_dataset_missing_required_key_fails(tmp_path: Path) -> None:
+    dataset_path = tmp_path / "dataset.json"
+    dataset_path.write_text(
+        json.dumps([{"sample_id": "sample-1", "source": "source_a", "text": "missing license"}]),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=r"index 0: missing required keys: license"):
+        read_dataset(dataset_path)
+
+
+def test_read_dataset_unsupported_extension_fails(tmp_path: Path) -> None:
+    dataset_path = tmp_path / "dataset.txt"
+    dataset_path.write_text("sample_id,source,license\ns1,a,mit\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"Unsupported dataset format"):
+        read_dataset(dataset_path)
+
+
+def test_run_split_with_json_dataset(tmp_path: Path) -> None:
     records = _build_records(5)
     dataset_path = tmp_path / "dataset.json"
     dataset_path.write_text(json.dumps(records), encoding="utf-8")
