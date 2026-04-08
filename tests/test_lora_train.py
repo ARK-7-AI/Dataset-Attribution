@@ -107,8 +107,15 @@ def patch_training_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
             self.pad_token = None
             self.eos_token = "<eos>"
 
-        def __call__(self, text: str, **_: object) -> dict[str, list[int]]:
+        def __call__(self, text: str, **kwargs: object) -> dict[str, list[int]]:
             values = [1, 2, 3] if text else [0]
+            max_length = kwargs.get("max_length")
+            truncation = bool(kwargs.get("truncation"))
+            padding = kwargs.get("padding")
+            if truncation and isinstance(max_length, int):
+                values = values[:max_length]
+            if padding == "max_length" and isinstance(max_length, int):
+                values = values + ([0] * max(0, max_length - len(values)))
             return {"input_ids": values, "attention_mask": [1] * len(values)}
 
         def save_pretrained(self, output: Path) -> None:

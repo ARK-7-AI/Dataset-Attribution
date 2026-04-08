@@ -11,8 +11,15 @@ from src.training.data_loader import load_instruction_datasets, preflight_valida
 
 
 class FakeTokenizer:
-    def __call__(self, text: str, **_: object) -> dict[str, list[int]]:
+    def __call__(self, text: str, **kwargs: object) -> dict[str, list[int]]:
         values = [1] * max(1, len(text.split()))
+        max_length = kwargs.get("max_length")
+        truncation = bool(kwargs.get("truncation"))
+        padding = kwargs.get("padding")
+        if truncation and isinstance(max_length, int):
+            values = values[:max_length]
+        if padding == "max_length" and isinstance(max_length, int):
+            values = values + ([0] * max(0, max_length - len(values)))
         return {"input_ids": values, "attention_mask": [1] * len(values)}
 
 
@@ -126,7 +133,7 @@ def test_loader_normalizes_missing_sample_id_source_license(tmp_path: Path, monk
     train_dataset, eval_dataset = load_instruction_datasets(config=config, tokenizer=FakeTokenizer())
 
     assert eval_dataset is None
-    assert train_dataset.rows[0]["sample_id"] == "alpaca-000000"
+    assert set(train_dataset.rows[0].keys()) == {"input_ids", "attention_mask", "labels"}
 
     normalized_snapshot = Path(config["data"]["normalized_snapshot_path"])
     parsed_snapshot = json.loads(normalized_snapshot.read_text(encoding="utf-8"))
@@ -194,7 +201,7 @@ def test_loader_accepts_alpaca_output_via_response_fallback(
     train_dataset, eval_dataset = load_instruction_datasets(config=config, tokenizer=FakeTokenizer())
 
     assert eval_dataset is None
-    assert train_dataset.rows[0]["sample_id"] == "s1"
+    assert set(train_dataset.rows[0].keys()) == {"input_ids", "attention_mask", "labels"}
 
 
 def test_loader_errors_with_sample_id_and_tested_fields_when_target_missing(
@@ -231,3 +238,116 @@ def test_loader_errors_with_sample_id_and_tested_fields_when_target_missing(
         match=r"Sample 's1' is missing target answer \(tested_fields=\['response', 'output', 'answer', 'completion'\]\)",
     ):
         load_instruction_datasets(config=config, tokenizer=FakeTokenizer())
+
+
+def test_loader_removes_metadata_fields_from_model_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset_path = tmp_path / "dataset.json"
+    dataset_path.write_text(
+        json.dumps(
+            [
+                {
+                    "sample_id": "s1",
+                    "source": "demo-source",
+                    "license": "mit",
+                    "prompt": "Summarize",
+                    "response": "Done",
+                    "metadata": {"topic": "science"},
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    splits_dir = tmp_path / "runs" / "run-a" / "splits"
+    splits_dir.mkdir(parents=True, exist_ok=True)
+    (splits_dir / "train.csv").write_text("sample_id\ns1\n", encoding="utf-8")
+
+    config = {
+        "run_id": "run-a",
+        "output_root": str(tmp_path / "runs"),
+        "data": {
+            "path": str(dataset_path),
+            "train_manifest_path": str(splits_dir / "train.csv"),
+            "text_fields": ["prompt", "response"],
+            "prompt_field": "prompt",
+            "response_field": "response",
+        },
+        "training": {"max_seq_len": 8},
+    }
+    monkeypatch.setattr("src.training.data_loader.importlib.import_module", lambda _: FakeDatasetsModule)
+
+    train_dataset, _ = load_instruction_datasets(config=config, tokenizer=FakeTokenizer())
+    assert set(train_dataset.rows[0].keys()) == {"input_ids", "attention_mask", "labels"}
+
+
+def test_loader_dynamic_padding_allows_variable_length_examples(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset_path = tmp_path / "dataset.json"
+    dataset_path.write_text(
+        json.dumps(
+            [
+                {"sample_id": "s1", "prompt": "short", "response": "ok"},
+                {"sample_id": "s2", "prompt": "a much longer prompt", "response": "fine"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    splits_dir = tmp_path / "runs" / "run-a" / "splits"
+    splits_dir.mkdir(parents=True, exist_ok=True)
+    (splits_dir / "train.csv").write_text("sample_id\ns1\ns2\n", encoding="utf-8")
+
+    config = {
+        "run_id": "run-a",
+        "output_root": str(tmp_path / "runs"),
+        "data": {
+            "path": str(dataset_path),
+            "train_manifest_path": str(splits_dir / "train.csv"),
+            "text_fields": ["prompt", "response"],
+            "prompt_field": "prompt",
+            "response_field": "response",
+            "padding": "dynamic",
+        },
+        "training": {"max_seq_len": 128},
+    }
+    monkeypatch.setattr("src.training.data_loader.importlib.import_module", lambda _: FakeDatasetsModule)
+
+    train_dataset, _ = load_instruction_datasets(config=config, tokenizer=FakeTokenizer())
+    row_lengths = [len(row["input_ids"]) for row in train_dataset.rows]
+    assert len(set(row_lengths)) > 1
+
+
+def test_loader_applies_truncation_and_max_length_padding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset_path = tmp_path / "dataset.json"
+    dataset_path.write_text(
+        json.dumps([{"sample_id": "s1", "prompt": "one two three four five six", "response": "ok"}]),
+        encoding="utf-8",
+    )
+    splits_dir = tmp_path / "runs" / "run-a" / "splits"
+    splits_dir.mkdir(parents=True, exist_ok=True)
+    (splits_dir / "train.csv").write_text("sample_id\ns1\n", encoding="utf-8")
+
+    config = {
+        "run_id": "run-a",
+        "output_root": str(tmp_path / "runs"),
+        "data": {
+            "path": str(dataset_path),
+            "train_manifest_path": str(splits_dir / "train.csv"),
+            "text_fields": ["prompt", "response"],
+            "prompt_field": "prompt",
+            "response_field": "response",
+            "padding": "max_length",
+        },
+        "training": {"max_seq_len": 5},
+    }
+    monkeypatch.setattr("src.training.data_loader.importlib.import_module", lambda _: FakeDatasetsModule)
+
+    train_dataset, _ = load_instruction_datasets(config=config, tokenizer=FakeTokenizer())
+    row = train_dataset.rows[0]
+    assert len(row["input_ids"]) == 5
+    assert len(row["attention_mask"]) == 5
+    assert row["labels"] == row["input_ids"]

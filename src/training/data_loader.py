@@ -267,6 +267,7 @@ def _tokenize_examples(
     examples: list[dict[str, str]],
     tokenizer: Any,
     max_seq_len: int,
+    padding: str,
 ) -> list[dict[str, Any]]:
     tokenized_rows: list[dict[str, Any]] = []
     for example in examples:
@@ -274,12 +275,51 @@ def _tokenize_examples(
             example["text"],
             truncation=True,
             max_length=max_seq_len,
-            padding="max_length",
+            padding=padding,
         )
-        encoded["labels"] = list(encoded["input_ids"])
-        encoded["sample_id"] = example["sample_id"]
-        tokenized_rows.append(encoded)
+        tokenized_rows.append(
+            {
+                "input_ids": list(encoded["input_ids"]),
+                "attention_mask": list(encoded["attention_mask"]),
+                "labels": list(encoded["input_ids"]),
+            }
+        )
     return tokenized_rows
+
+
+def _validate_model_tensor_fields(
+    rows: list[dict[str, Any]], *, max_seq_len: int, padding: str, split_name: str
+) -> None:
+    expected_fields = {"input_ids", "attention_mask", "labels"}
+    for row_idx, row in enumerate(rows):
+        row_fields = set(row)
+        if row_fields != expected_fields:
+            raise ValueError(
+                f"Unexpected {split_name} dataset fields at row {row_idx}: {sorted(row_fields)}. "
+                f"Expected only {sorted(expected_fields)}"
+            )
+
+        input_ids = row["input_ids"]
+        attention_mask = row["attention_mask"]
+        labels = row["labels"]
+        if not isinstance(input_ids, list) or not all(isinstance(v, int) for v in input_ids):
+            raise ValueError(f"{split_name}[{row_idx}].input_ids must be list[int]")
+        if not isinstance(attention_mask, list) or not all(isinstance(v, int) for v in attention_mask):
+            raise ValueError(f"{split_name}[{row_idx}].attention_mask must be list[int]")
+        if not isinstance(labels, list) or not all(isinstance(v, int) for v in labels):
+            raise ValueError(f"{split_name}[{row_idx}].labels must be list[int]")
+
+        if not input_ids:
+            raise ValueError(f"{split_name}[{row_idx}] is empty after tokenization")
+        if len(input_ids) != len(attention_mask) or len(input_ids) != len(labels):
+            raise ValueError(
+                f"{split_name}[{row_idx}] has mismatched sequence lengths: "
+                f"input_ids={len(input_ids)} attention_mask={len(attention_mask)} labels={len(labels)}"
+            )
+        if padding == "max_length" and len(input_ids) != max_seq_len:
+            raise ValueError(
+                f"{split_name}[{row_idx}] length={len(input_ids)} does not match max_seq_len={max_seq_len}"
+            )
 
 
 def load_instruction_datasets(config: dict[str, Any], tokenizer: Any) -> tuple[Any, Any | None]:
@@ -299,6 +339,15 @@ def load_instruction_datasets(config: dict[str, Any], tokenizer: Any) -> tuple[A
         str(field).strip() for field in data_cfg.get("response_fallback_fields", []) if str(field).strip()
     ]
     normalize_response_key = bool(data_cfg.get("normalize_response_key", False))
+    padding_strategy = str(data_cfg.get("padding", "max_length")).strip().lower()
+    if padding_strategy in {"dynamic", "longest"}:
+        tokenization_padding = "longest"
+        validation_padding = "dynamic"
+    elif padding_strategy == "max_length":
+        tokenization_padding = "max_length"
+        validation_padding = "max_length"
+    else:
+        raise ValueError("data.padding must be one of: max_length, dynamic, longest")
 
     max_seq_len = int(train_cfg.get("max_seq_len", 512))
 
@@ -350,13 +399,47 @@ def load_instruction_datasets(config: dict[str, Any], tokenizer: Any) -> tuple[A
 
     datasets_mod = importlib.import_module("datasets")
 
-    train_dataset = datasets_mod.Dataset.from_list(
-        _tokenize_examples(train_examples, tokenizer=tokenizer, max_seq_len=max_seq_len)
+    train_rows = _tokenize_examples(
+        train_examples,
+        tokenizer=tokenizer,
+        max_seq_len=max_seq_len,
+        padding=tokenization_padding,
     )
+    _validate_model_tensor_fields(
+        train_rows,
+        max_seq_len=max_seq_len,
+        padding=validation_padding,
+        split_name="train",
+    )
+
+    train_dataset = datasets_mod.Dataset.from_list(train_rows)
     eval_dataset = None
     if test_examples:
-        eval_dataset = datasets_mod.Dataset.from_list(
-            _tokenize_examples(test_examples, tokenizer=tokenizer, max_seq_len=max_seq_len)
+        eval_rows = _tokenize_examples(
+            test_examples,
+            tokenizer=tokenizer,
+            max_seq_len=max_seq_len,
+            padding=tokenization_padding,
         )
+        _validate_model_tensor_fields(
+            eval_rows,
+            max_seq_len=max_seq_len,
+            padding=validation_padding,
+            split_name="eval",
+        )
+        eval_dataset = datasets_mod.Dataset.from_list(eval_rows)
 
     return train_dataset, eval_dataset
+
+
+def validate_trainer_dataset(
+    dataset: Any,
+    *,
+    split_name: str,
+    max_seq_len: int,
+    padding: str,
+) -> None:
+    rows = getattr(dataset, "rows", None)
+    if rows is None:
+        rows = [dataset[index] for index in range(len(dataset))]
+    _validate_model_tensor_fields(rows, max_seq_len=max_seq_len, padding=padding, split_name=split_name)
