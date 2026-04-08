@@ -6,6 +6,9 @@ CONFIG_PATH="configs/train_lora.yaml"
 echo "Starting LoRA training..."
 echo "Config: ${CONFIG_PATH}"
 
+echo "Running preflight data-path checks..."
+python scripts/preflight_data_paths.py --config "${CONFIG_PATH}"
+
 python -m src.training.lora_train --config "${CONFIG_PATH}"
 
 LATEST_RUN_DIR="$(ls -dt outputs/runs/*/train 2>/dev/null | head -n 1 || true)"

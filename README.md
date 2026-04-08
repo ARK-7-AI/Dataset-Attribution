@@ -10,6 +10,21 @@ Dataset attribution for LoRA fine-tuned LLMs: accuracy, efficiency, and privacy 
 - `tests/` — test suite.
 - `outputs/` — generated artifacts (checkpoints, logs, reports).
 
+## Code vs Data locations
+
+Use this repository path convention to keep code and datasets separate:
+
+- `src/data/` -> Python modules only (splitters, loaders, schemas). Do **not** store datasets here.
+- `data/raw/` -> canonical source datasets (for example: `data/raw/alpaca_data.json`).
+- `data/processed/` -> optional transformed artifacts only when actively used by a pipeline.
+- `outputs/runs/<run_id>/splits/` -> generated split manifests (`train.csv`, `test.csv`, `shadow.csv`).
+
+Examples:
+
+- Split config dataset source: `dataset.path: data/raw/alpaca_data.json`
+- Train config source dataset: `data.dataset_json_path: data/raw/alpaca_data.json`
+- Train config manifests: `data.train_manifest_path: outputs/runs/<run_id>/splits/train.csv`
+
 ## Entrypoint convention
 
 Use Python module execution for all runnable jobs:
@@ -36,7 +51,7 @@ If `sample_id`, `source`, or `license` are missing, defaults are auto-filled as:
 
 ## LoRA data pipeline run order
 
-Run data splitting **before** training so manifests exist at `outputs/runs/<run_id>/splits/*.csv` and training can resolve `data.train_manifest_path` / `data.eval_manifest_path`.
+Run data splitting **before** training so manifests exist at `outputs/runs/<run_id>/splits/*.csv` and training can resolve `data.train_manifest_path` / `data.test_manifest_path`.
 
 1. Split stage (first): load `configs/data.yaml`, select/subsample rows if configured, then write `train.csv`, `test.csv`, and `shadow.csv` into `outputs/runs/<run_id>/splits/`.
 2. Training stage (second): load `configs/train_lora.yaml`, resolve `<run_id>` inside manifest paths, and train against the generated split manifests.
