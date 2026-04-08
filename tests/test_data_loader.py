@@ -80,3 +80,17 @@ def test_preflight_validation_reports_missing_dataset_and_manifest_paths(tmp_pat
 
     with pytest.raises(FileNotFoundError, match="Shadow manifest not found"):
         preflight_validate_data_paths(config)
+
+
+def test_preflight_validation_rejects_src_dataset_paths(tmp_path: Path) -> None:
+    config = {
+        "data": {
+            "dataset_json_path": "src/data/alpaca_data.json",
+            "train_manifest_path": str(tmp_path / "splits" / "train.csv"),
+            "test_manifest_path": str(tmp_path / "splits" / "test.csv"),
+            "shadow_manifest_path": str(tmp_path / "splits" / "shadow.csv"),
+        }
+    }
+
+    with pytest.raises(ValueError, match=r"must not live under 'src/'"):
+        preflight_validate_data_paths(config)
