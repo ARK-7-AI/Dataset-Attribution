@@ -44,10 +44,17 @@ This keeps execution consistent across local runs, CI, and future script wrapper
   - a list of objects, e.g. `[{"sample_id": "...", "source": "...", "license": "..."}]`, or
   - a wrapped object with `data`, e.g. `{"data": [{"sample_id": "...", "source": "...", "license": "..."}]}`.
 
-If `sample_id`, `source`, or `license` are missing, defaults are auto-filled as:
-- `sample_id`: `sample-{row_index}`
-- `source`: `unknown`
+If `sample_id`, `source`, or `license` are missing, normalization auto-fills:
+- `sample_id`: `{dataset_name}-{row_index:06d}` (example: `alpaca-000123`)
+- `source`: `{dataset_name}` (example: `alpaca`)
 - `license`: `unknown`
+
+During training ingestion, JSON rows are validated strictly:
+- each row must be a JSON object (dict),
+- each row must include at least one non-empty text payload field used for instruction tuning,
+- errors include the failing row index for fast debugging.
+
+Optional: set `data.normalized_snapshot_path` (for example `data/processed/alpaca_normalized.json`) in training config to persist the normalized records used for split-manifest joins.
 
 ## LoRA data pipeline run order
 

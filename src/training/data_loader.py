@@ -9,6 +9,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from src.data.normalize import normalize_records
+
 
 PROMPT_TEMPLATE = "### Instruction:\n{instruction}\n\n### Response:\n"
 
@@ -101,7 +103,7 @@ def preflight_validate_data_paths(config: dict[str, Any]) -> dict[str, Path | No
     }
 
 
-def _read_dataset_records(dataset_path: Path) -> list[dict[str, Any]]:
+def _read_dataset_records(dataset_path: Path, *, dataset_name: str) -> list[dict[str, Any]]:
     if not dataset_path.exists():
         raise FileNotFoundError(f"Original dataset JSON not found: {dataset_path}")
 
@@ -118,16 +120,16 @@ def _read_dataset_records(dataset_path: Path) -> list[dict[str, Any]]:
     else:
         raise ValueError("Original dataset JSON must be a list or an object with a 'data' list")
 
-    records: list[dict[str, Any]] = []
-    for index, row in enumerate(rows):
-        if not isinstance(row, dict):
-            raise ValueError(f"Invalid dataset row at index {index}: expected a JSON object")
-        records.append(dict(row))
-
-    if not records:
+    if not rows:
         raise ValueError("Original dataset is empty")
 
-    return records
+    return normalize_records(list(rows), dataset_name=dataset_name)
+
+
+
+def _persist_normalized_snapshot(records: list[dict[str, Any]], output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _read_split_ids(split_path: Path, split_name: str) -> list[str]:
@@ -277,7 +279,12 @@ def load_instruction_datasets(config: dict[str, Any], tokenizer: Any) -> tuple[A
 
     max_seq_len = int(train_cfg.get("max_seq_len", 512))
 
-    records = _read_dataset_records(dataset_path)
+    dataset_name = str(data_cfg.get("dataset_name") or dataset_path.stem).strip()
+    records = _read_dataset_records(dataset_path, dataset_name=dataset_name)
+
+    normalized_snapshot_path_raw = data_cfg.get("normalized_snapshot_path")
+    if normalized_snapshot_path_raw:
+        _persist_normalized_snapshot(records, Path(str(normalized_snapshot_path_raw)))
     record_index = _build_record_index(records)
 
     train_ids = _read_split_ids(train_manifest_path, split_name="train")
