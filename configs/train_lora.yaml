@@ -2,7 +2,7 @@
 experiment_name: baseline_lora
 
 # Base model/tokenizer
-model_name_or_path: meta-llama/Llama-3.2-3B-Instruct
+model_name_or_path: Qwen/Qwen2.5-3B-Instruct
 tokenizer_name_or_path: null # optional override (defaults to model_name_or_path)
 
 # Run output routing
@@ -30,10 +30,10 @@ data:
   response_field: response
 
 training:
-  batch_size: 4
+  batch_size: 2
   learning_rate: 0.0002
   epochs: 3
-  gradient_accumulation_steps: 1
+  gradient_accumulation_steps: 2
   max_steps: null # optional override; if set > 0, takes precedence over epochs
   warmup_ratio: 0.03
   weight_decay: 0.01
@@ -48,6 +48,13 @@ training:
   save_steps: 100
   eval_steps: 100
   eval_strategy: steps # one of: no, steps, epoch
+
+# Memory profile presets:
+# - Balanced (default): bf16 + micro-batch 2 + grad accumulation 2
+# - Lower VRAM: set fp16=true, bf16=false, batch_size=1, gradient_accumulation_steps>=4
+# - Minimum VRAM (optional): enable exactly one of load_in_4bit/load_in_8bit
+load_in_4bit: false
+load_in_8bit: false
 
 seed: 42
 device_map: auto

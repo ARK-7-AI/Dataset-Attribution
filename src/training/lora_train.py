@@ -168,8 +168,42 @@ def _get_config_params(config: dict[str, Any]) -> dict[str, Any]:
         "eval_strategy": str(train_cfg.get("eval_strategy", "no")),
         "device_map": config.get("device_map", "auto"),
         "torch_dtype": config.get("torch_dtype", "auto"),
+        "load_in_4bit": bool(config.get("load_in_4bit", False)),
+        "load_in_8bit": bool(config.get("load_in_8bit", False)),
         "seed": int(config.get("seed", 42)),
     }
+
+def _validate_model_compatibility(config: dict[str, Any], transformers: Any) -> None:
+    """Validate tokenizer/model compatibility before launching training."""
+    base_model_path = config.get("model_name_or_path") or config.get("base_model_path")
+    tokenizer_path = config.get("tokenizer_name_or_path") or base_model_path
+
+    if not base_model_path:
+        raise ValueError("base_model_path (or model_name_or_path) must be set in config")
+
+    try:
+        transformers.AutoTokenizer.from_pretrained(str(tokenizer_path))
+    except Exception as exc:  # pragma: no cover - exercised with fakes in tests
+        raise ValueError(
+            f"Unsupported tokenizer for '{tokenizer_path}'. Ensure the tokenizer is accessible and valid."
+        ) from exc
+
+    try:
+        model_config = transformers.AutoConfig.from_pretrained(str(base_model_path))
+    except Exception as exc:  # pragma: no cover - exercised with fakes in tests
+        raise ValueError(
+            f"Unable to load model config for '{base_model_path}'. Ensure the model id/path is valid."
+        ) from exc
+
+    is_encoder_decoder = bool(getattr(model_config, "is_encoder_decoder", False))
+    architectures = [str(arch) for arch in (getattr(model_config, "architectures", None) or [])]
+    is_causal_architecture = any("CausalLM" in arch for arch in architectures)
+    if is_encoder_decoder or not is_causal_architecture:
+        arch_label = ", ".join(architectures) if architectures else "unknown"
+        raise ValueError(
+            "Model compatibility check failed: expected a decoder-only causal LM, "
+            f"but got architectures=[{arch_label}] and is_encoder_decoder={is_encoder_decoder}."
+        )
 
 
 def _persist_run_outputs(
@@ -220,8 +254,8 @@ def run_training(config_path: str) -> Path:
     train_dir = run_dir / "train"
     train_dir.mkdir(parents=True, exist_ok=True)
 
-    if not params["base_model_path"]:
-        raise ValueError("base_model_path (or model_name_or_path) must be set in config")
+    _validate_model_compatibility(config, transformers)
+
     tokenizer = transformers.AutoTokenizer.from_pretrained(str(params["tokenizer_name_or_path"]))
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -234,10 +268,21 @@ def run_training(config_path: str) -> Path:
     }
     resolved_dtype = dtype_map.get(str(params["torch_dtype"]).lower(), "auto")
 
+    if params["load_in_4bit"] and params["load_in_8bit"]:
+        raise ValueError("Only one quantized load mode can be enabled: load_in_4bit or load_in_8bit")
+
+    model_load_kwargs: dict[str, Any] = {
+        "device_map": params["device_map"],
+        "torch_dtype": resolved_dtype,
+    }
+    if params["load_in_4bit"]:
+        model_load_kwargs["load_in_4bit"] = True
+    if params["load_in_8bit"]:
+        model_load_kwargs["load_in_8bit"] = True
+
     model = transformers.AutoModelForCausalLM.from_pretrained(
         str(params["base_model_path"]),
-        device_map=params["device_map"],
-        torch_dtype=resolved_dtype,
+        **model_load_kwargs,
     )
 
     lora_config = peft.LoraConfig(
