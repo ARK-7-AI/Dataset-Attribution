@@ -18,10 +18,6 @@ split:
     train: 0.8
     test: 0.1
     shadow: 0.1
-  counts:
-    train: 2400
-    test: 300
-    shadow: 300
   stratify_by:
     - source
     - license
