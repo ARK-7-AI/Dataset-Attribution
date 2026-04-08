@@ -3,14 +3,14 @@ output_root: outputs/runs
 
 dataset:
   # Supported file types for dataset.path:
-  # - CSV:  data/dataset.csv
-  # - JSON: data/dataset.json
+  # - CSV:  data/raw/dataset.csv
+  # - JSON: data/raw/dataset.json
   #   * list form:   [{"sample_id":"...","source":"...","license":"..."}]
   #   * wrapped form:{"data":[{"sample_id":"...","source":"...","license":"..."}]}
   # Missing sample_id/source/license are auto-filled:
   # sample_id=sample-{row_index}, source=unknown, license=unknown
-  path: data/dataset.csv
-  subset_size: 3000
+  path: data/raw/alpaca_data.json
+  subset_size: null
 
 split:
   seed: 2026
@@ -18,10 +18,6 @@ split:
     train: 0.8
     test: 0.1
     shadow: 0.1
-  counts:
-    train: 2400
-    test: 300
-    shadow: 300
   stratify_by:
     - source
     - license
