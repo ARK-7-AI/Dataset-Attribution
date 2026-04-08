@@ -184,3 +184,10 @@ def test_run_split_writes_manifests(tmp_path: Path) -> None:
         with manifest.open("r", encoding="utf-8", newline="") as handle:
             reader = csv.DictReader(handle)
             assert reader.fieldnames == ["sample_id", "source", "license"]
+
+
+def test_select_subset_larger_than_dataset_raises() -> None:
+    records = _build_records(10)
+
+    with pytest.raises(ValueError, match=r"subset_size \(3000\) cannot exceed dataset size \(10\)"):
+        select_subset(records, subset_size=3000, seed=2026)

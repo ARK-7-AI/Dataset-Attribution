@@ -54,6 +54,8 @@ If `sample_id`, `source`, or `license` are missing, defaults are auto-filled as:
 Run data splitting **before** training so manifests exist at `outputs/runs/<run_id>/splits/*.csv` and training can resolve `data.train_manifest_path` / `data.test_manifest_path`.
 
 1. Split stage (first): load `configs/data.yaml`, select/subsample rows if configured, then write `train.csv`, `test.csv`, and `shadow.csv` into `outputs/runs/<run_id>/splits/`.
+
+- `dataset.subset_size` must be less than or equal to the source dataset row count; otherwise split generation fails fast with a clear error.
 2. Training stage (second): load `configs/train_lora.yaml`, resolve `<run_id>` inside manifest paths, and train against the generated split manifests.
 
 

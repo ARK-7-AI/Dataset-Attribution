@@ -10,7 +10,7 @@ dataset:
   # Missing sample_id/source/license are auto-filled:
   # sample_id=sample-{row_index}, source=unknown, license=unknown
   path: data/raw/alpaca_data.json
-  subset_size: null
+  subset_size: 3000
 
 split:
   seed: 2026
