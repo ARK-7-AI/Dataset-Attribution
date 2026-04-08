@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import difflib
 import importlib
 import json
 from pathlib import Path
@@ -10,6 +11,76 @@ from typing import Any
 
 
 PROMPT_TEMPLATE = "### Instruction:\n{instruction}\n\n### Response:\n"
+
+
+def _closest_existing_path_suggestion(path: Path) -> str | None:
+    probe = path
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+
+    if not probe.exists():
+        return None
+
+    if probe.is_file():
+        return str(probe)
+
+    candidate_names = [candidate.name for candidate in probe.iterdir()]
+    match = difflib.get_close_matches(path.name, candidate_names, n=1, cutoff=0.4)
+    if match:
+        return str(probe / match[0])
+    return str(probe)
+
+
+def _raise_missing_path_error(path: Path, *, label: str) -> None:
+    suggestion = _closest_existing_path_suggestion(path)
+    if suggestion:
+        raise FileNotFoundError(
+            f"{label} not found: '{path}'. Closest existing path suggestion: '{suggestion}'."
+        )
+    raise FileNotFoundError(f"{label} not found: '{path}'.")
+
+
+def preflight_validate_data_paths(config: dict[str, Any]) -> dict[str, Path | None]:
+    """Resolve and validate all configured dataset/split paths before training."""
+    data_cfg = config.get("data", {})
+    if not isinstance(data_cfg, dict):
+        raise ValueError("Missing required 'data' config mapping")
+
+    dataset_path_raw = (
+        data_cfg.get("dataset_json_path")
+        or data_cfg.get("dataset_path")
+        or data_cfg.get("path")
+        or config.get("dataset_path")
+    )
+    if not dataset_path_raw:
+        raise ValueError("Config must define original dataset JSON path at 'data.dataset_json_path'")
+    dataset_path = Path(str(dataset_path_raw))
+    if not dataset_path.exists():
+        _raise_missing_path_error(dataset_path, label="Dataset JSON")
+
+    train_manifest_raw = data_cfg.get("train_manifest_path")
+    if not train_manifest_raw:
+        raise ValueError("Config must define 'data.train_manifest_path'")
+    train_manifest_path = Path(str(train_manifest_raw))
+    if not train_manifest_path.exists():
+        _raise_missing_path_error(train_manifest_path, label="Train manifest")
+
+    test_manifest_raw = data_cfg.get("test_manifest_path") or data_cfg.get("eval_manifest_path")
+    test_manifest_path = Path(str(test_manifest_raw)) if test_manifest_raw else None
+    if test_manifest_path and not test_manifest_path.exists():
+        _raise_missing_path_error(test_manifest_path, label="Test manifest")
+
+    shadow_manifest_raw = data_cfg.get("shadow_manifest_path")
+    shadow_manifest_path = Path(str(shadow_manifest_raw)) if shadow_manifest_raw else None
+    if shadow_manifest_path and not shadow_manifest_path.exists():
+        _raise_missing_path_error(shadow_manifest_path, label="Shadow manifest")
+
+    return {
+        "dataset_path": dataset_path,
+        "train_manifest_path": train_manifest_path,
+        "test_manifest_path": test_manifest_path,
+        "shadow_manifest_path": shadow_manifest_path,
+    }
 
 
 def _read_dataset_records(dataset_path: Path) -> list[dict[str, Any]]:
@@ -177,21 +248,10 @@ def load_instruction_datasets(config: dict[str, Any], tokenizer: Any) -> tuple[A
     """Load train/test datasets by joining split sample IDs to original JSON records."""
     train_cfg = config.get("training", {})
     data_cfg = config.get("data", {})
-
-    dataset_path_raw = data_cfg.get("dataset_json_path") or data_cfg.get("path") or config.get("dataset_path")
-    if not dataset_path_raw:
-        raise ValueError(
-            "Config must define original dataset JSON path at 'data.dataset_json_path'"
-        )
-    dataset_path = Path(str(dataset_path_raw))
-
-    train_manifest_raw = data_cfg.get("train_manifest_path")
-    if not train_manifest_raw:
-        raise ValueError("Config must define 'data.train_manifest_path'")
-    train_manifest_path = Path(str(train_manifest_raw))
-
-    eval_manifest_raw = data_cfg.get("eval_manifest_path")
-    eval_manifest_path = Path(str(eval_manifest_raw)) if eval_manifest_raw else None
+    resolved_paths = preflight_validate_data_paths(config)
+    dataset_path = resolved_paths["dataset_path"]
+    train_manifest_path = resolved_paths["train_manifest_path"]
+    eval_manifest_path = resolved_paths["test_manifest_path"]
 
     text_fields = [str(field).strip() for field in data_cfg.get("text_fields", []) if str(field).strip()]
     prompt_field = str(data_cfg.get("prompt_field") or "").strip()

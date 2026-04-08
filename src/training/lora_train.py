@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import yaml
 
-from src.training.data_loader import load_instruction_datasets
+from src.training.data_loader import load_instruction_datasets, preflight_validate_data_paths
 
 
 def build_parser() -> ArgumentParser:
@@ -76,6 +76,9 @@ def _validate_training_config(config: dict[str, Any]) -> None:
 
     _require_non_empty(data_cfg, "dataset_json_path", label="data.dataset_json_path")
     _require_non_empty(data_cfg, "train_manifest_path", label="data.train_manifest_path")
+    if not data_cfg.get("test_manifest_path") and not data_cfg.get("eval_manifest_path"):
+        raise ValueError("Missing required config field: 'data.test_manifest_path' (or legacy 'data.eval_manifest_path')")
+    _require_non_empty(data_cfg, "shadow_manifest_path", label="data.shadow_manifest_path")
 
     text_fields = _require_non_empty(data_cfg, "text_fields", label="data.text_fields")
     if not isinstance(text_fields, list) or not text_fields or any(
@@ -142,7 +145,8 @@ def _get_config_params(config: dict[str, Any]) -> dict[str, Any]:
         "run_id": config.get("run_id"),
         "dataset_json_path": data_cfg.get("dataset_json_path") or data_cfg.get("path") or config.get("dataset_path"),
         "train_manifest_path": data_cfg.get("train_manifest_path"),
-        "eval_manifest_path": data_cfg.get("eval_manifest_path"),
+        "test_manifest_path": data_cfg.get("test_manifest_path") or data_cfg.get("eval_manifest_path"),
+        "shadow_manifest_path": data_cfg.get("shadow_manifest_path"),
         "text_fields": data_cfg.get("text_fields", []),
         "prompt_field": data_cfg.get("prompt_field"),
         "response_field": data_cfg.get("response_field"),
@@ -245,10 +249,12 @@ def run_training(config_path: str) -> Path:
     params["run_id"] = run_id
     config["run_id"] = run_id
     data_cfg = config.get("data", {})
-    for path_key in ("train_manifest_path", "eval_manifest_path"):
+    for path_key in ("train_manifest_path", "test_manifest_path", "eval_manifest_path", "shadow_manifest_path"):
         path_value = data_cfg.get(path_key)
         if isinstance(path_value, str):
             data_cfg[path_key] = path_value.replace("<run_id>", run_id)
+
+    preflight_validate_data_paths(config)
 
     run_dir = Path(str(params["output_dir"])) / run_id
     train_dir = run_dir / "train"

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from src.training.data_loader import load_instruction_datasets
+from src.training.data_loader import load_instruction_datasets, preflight_validate_data_paths
 
 
 class FakeTokenizer:
@@ -56,3 +56,27 @@ def test_loader_fails_when_split_has_unknown_id(tmp_path: Path, monkeypatch: pyt
 
     with pytest.raises(ValueError, match="not present in original dataset"):
         load_instruction_datasets(config=config, tokenizer=FakeTokenizer())
+
+
+def test_preflight_validation_reports_missing_dataset_and_manifest_paths(tmp_path: Path) -> None:
+    config = {
+        "data": {
+            "dataset_json_path": str(tmp_path / "alpaca_data.json"),
+            "train_manifest_path": str(tmp_path / "splits" / "train.csv"),
+            "test_manifest_path": str(tmp_path / "splits" / "test.csv"),
+            "shadow_manifest_path": str(tmp_path / "splits" / "shadow.csv"),
+        }
+    }
+
+    with pytest.raises(FileNotFoundError, match="Dataset JSON not found"):
+        preflight_validate_data_paths(config)
+
+    dataset_path = tmp_path / "alpaca_data.json"
+    dataset_path.write_text("[]", encoding="utf-8")
+    splits_dir = tmp_path / "splits"
+    splits_dir.mkdir(parents=True, exist_ok=True)
+    (splits_dir / "train.csv").write_text("sample_id\ns1\n", encoding="utf-8")
+    (splits_dir / "test.csv").write_text("sample_id\ns1\n", encoding="utf-8")
+
+    with pytest.raises(FileNotFoundError, match="Shadow manifest not found"):
+        preflight_validate_data_paths(config)
