@@ -152,7 +152,11 @@ def patch_training_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
         }
 
     class FakeTrainer:
-        def __init__(self, **_: object) -> None:
+        def __init__(self, **kwargs: object) -> None:
+            if "tokenizer" in kwargs:
+                raise TypeError("__init__() got an unexpected keyword argument 'tokenizer'")
+            if "data_collator" not in kwargs:
+                raise AssertionError("data_collator must be set explicitly")
             self.state = type(
                 "FakeState",
                 (),
@@ -163,16 +167,23 @@ def patch_training_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
             return FakeTrainResult()
 
     class FakeTransformers:
+        __version__ = "4.47.0"
         AutoTokenizer = FakeAutoTokenizer
         AutoConfig = FakeAutoConfig
         AutoModelForCausalLM = FakeAutoModel
         TrainingArguments = FakeTrainingArguments
         Trainer = FakeTrainer
 
+        class DataCollatorForLanguageModeling:
+            def __init__(self, tokenizer: object, mlm: bool) -> None:
+                self.tokenizer = tokenizer
+                self.mlm = mlm
+
     class FakeTaskType:
         CAUSAL_LM = "CAUSAL_LM"
 
     class FakePeft:
+        __version__ = "0.13.0"
         TaskType = FakeTaskType
 
         class LoraConfig:
@@ -194,12 +205,16 @@ def patch_training_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeDatasets:
         Dataset = FakeDataset
 
+    class FakeAccelerate:
+        __version__ = "1.1.0"
+
     def fake_import_module(name: str) -> object:
         mapping = {
             "transformers": FakeTransformers,
             "peft": FakePeft,
             "torch": FakeTorch,
             "datasets": FakeDatasets,
+            "accelerate": FakeAccelerate,
         }
         return mapping[name]
 
@@ -209,6 +224,50 @@ def patch_training_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_parse_args_reads_config_path() -> None:
     args = parse_args(["--config", "configs/train_lora.yaml"])
     assert args.config == "configs/train_lora.yaml"
+
+
+def test_build_trainer_kwargs_uses_processing_class_when_supported() -> None:
+    class FakeTrainer:
+        def __init__(self, *, processing_class: object | None = None, **kwargs: object) -> None:
+            self.processing_class = processing_class
+            self.kwargs = kwargs
+
+    class FakeTransformers:
+        Trainer = FakeTrainer
+
+    tokenizer = object()
+    kwargs = lora_train._build_trainer_kwargs(
+        FakeTransformers,
+        model=object(),
+        training_args=object(),
+        train_dataset=[],
+        eval_dataset=[],
+        tokenizer=tokenizer,
+        data_collator=object(),
+    )
+    assert kwargs["processing_class"] is tokenizer
+    assert "tokenizer" not in kwargs
+
+
+def test_build_trainer_kwargs_omits_processing_class_when_not_supported() -> None:
+    class FakeTrainer:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+
+    class FakeTransformers:
+        Trainer = FakeTrainer
+
+    kwargs = lora_train._build_trainer_kwargs(
+        FakeTransformers,
+        model=object(),
+        training_args=object(),
+        train_dataset=[],
+        eval_dataset=[],
+        tokenizer=object(),
+        data_collator=object(),
+    )
+    assert "processing_class" not in kwargs
+    assert "tokenizer" not in kwargs
 
 
 def test_run_training_writes_expected_artifacts(

@@ -5,6 +5,7 @@ from __future__ import annotations
 from argparse import ArgumentParser, Namespace
 from datetime import datetime, timezone
 import importlib
+import inspect
 import json
 from pathlib import Path
 from typing import Any, Sequence
@@ -219,6 +220,37 @@ def _validate_model_compatibility(config: dict[str, Any], transformers: Any) -> 
         )
 
 
+def _resolve_package_version(module: Any) -> str:
+    """Return package version string when available."""
+    return str(getattr(module, "__version__", "unknown"))
+
+
+def _build_trainer_kwargs(
+    transformers: Any,
+    *,
+    model: Any,
+    training_args: Any,
+    train_dataset: Any,
+    eval_dataset: Any | None,
+    tokenizer: Any,
+    data_collator: Any,
+) -> dict[str, Any]:
+    """Build Trainer kwargs that are compatible across Transformers versions."""
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "args": training_args,
+        "train_dataset": train_dataset,
+        "eval_dataset": eval_dataset,
+        "data_collator": data_collator,
+    }
+
+    trainer_signature = inspect.signature(transformers.Trainer.__init__)
+    if "processing_class" in trainer_signature.parameters:
+        kwargs["processing_class"] = tokenizer
+
+    return kwargs
+
+
 def _persist_run_outputs(
     run_dir: Path,
     params: dict[str, Any],
@@ -249,6 +281,14 @@ def run_training(config_path: str) -> Path:
     transformers = importlib.import_module("transformers")
     peft = importlib.import_module("peft")
     torch = importlib.import_module("torch")
+    accelerate = importlib.import_module("accelerate")
+
+    print(
+        "[startup] effective_versions "
+        f"transformers={_resolve_package_version(transformers)} "
+        f"accelerate={_resolve_package_version(accelerate)} "
+        f"peft={_resolve_package_version(peft)}"
+    )
 
     config = _load_config(config_path)
     config["config_path"] = str(config_path)
@@ -337,12 +377,18 @@ def run_training(config_path: str) -> Path:
         remove_unused_columns=False,
     )
 
+    data_collator = transformers.DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+
     trainer = transformers.Trainer(
-        model=model,
-        args=training_args,
-        train_dataset=train_dataset,
-        eval_dataset=eval_dataset,
-        tokenizer=tokenizer,
+        **_build_trainer_kwargs(
+            transformers,
+            model=model,
+            training_args=training_args,
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
+            tokenizer=tokenizer,
+            data_collator=data_collator,
+        )
     )
 
     train_result = trainer.train()

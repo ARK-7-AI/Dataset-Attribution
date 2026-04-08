@@ -117,6 +117,15 @@ python -m src.training.lora_train --config configs/train_lora.yaml
 
 (Equivalent wrapper script: `bash scripts/run_lora.sh`.)
 
+## Training dependency compatibility (pinned)
+
+To reduce breakage from upstream API shifts in Hugging Face Trainer, this project pins:
+
+- `transformers>=4.46,<4.49`
+- `accelerate>=1.0,<1.3`
+
+These ranges are validated with the LoRA training pipeline and regression tests in `tests/test_lora_train.py`. At startup, `src.training.lora_train` logs the effective runtime versions for `transformers`, `accelerate`, and `peft` to make debugging easier.
+
 ## Expected output artifacts and where to find `run_id`
 
 After training finishes, artifacts are written under:
