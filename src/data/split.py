@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+from src.data.normalize import normalize_records
+
 
 @dataclass(frozen=True)
 class SplitRatios:
@@ -89,16 +91,6 @@ def _validate_dataset_rows(rows: list[Mapping[str, Any]]) -> None:
             raise ValueError(f"Invalid dataset row at index {index}: row must be a mapping")
 
 
-def _ensure_required_columns(rows: list[dict[str, str]]) -> list[dict[str, str]]:
-    normalized: list[dict[str, str]] = []
-    for index, row in enumerate(rows):
-        enriched = dict(row)
-        enriched.setdefault("sample_id", f"sample-{index}")
-        enriched.setdefault("source", "unknown")
-        enriched.setdefault("license", "unknown")
-        normalized.append(enriched)
-    return normalized
-
 
 def read_dataset(dataset_path: str | Path) -> list[dict[str, str]]:
     """Read CSV or JSON dataset into a list of records."""
@@ -111,7 +103,7 @@ def read_dataset(dataset_path: str | Path) -> list[dict[str, str]]:
             reader = csv.DictReader(handle)
             rows = [dict(row) for row in reader]
         _validate_dataset_rows(rows)
-        return _ensure_required_columns(rows)
+        return normalize_records(rows, dataset_name=path.stem)
 
     if suffix == ".json":
         with path.open("r", encoding="utf-8") as handle:
@@ -137,7 +129,7 @@ def read_dataset(dataset_path: str | Path) -> list[dict[str, str]]:
             rows.append(_coerce_record(dict(item)))
 
         _validate_dataset_rows(rows)
-        return _ensure_required_columns(rows)
+        return normalize_records(rows, dataset_name=path.stem)
 
     raise ValueError(f"Unsupported dataset format for '{path.name}'. Use .csv or .json")
 

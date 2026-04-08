@@ -124,8 +124,8 @@ def test_read_dataset_instruction_format_defaults_required_keys(tmp_path: Path) 
     )
 
     loaded = read_dataset(dataset_path)
-    assert loaded[0]["sample_id"] == "sample-0"
-    assert loaded[0]["source"] == "unknown"
+    assert loaded[0]["sample_id"] == "dataset-000000"
+    assert loaded[0]["source"] == "dataset"
     assert loaded[0]["license"] == "unknown"
 
 
