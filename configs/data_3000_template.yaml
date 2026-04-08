@@ -1,0 +1,21 @@
+run_id: default_run
+output_root: outputs/runs
+
+dataset:
+  # Use this template when your source dataset has at least 3000 rows.
+  path: data/raw/alpaca_data.json
+  subset_size: 3000
+
+split:
+  seed: 2026
+  ratios:
+    train: 0.8
+    test: 0.1
+    shadow: 0.1
+  counts:
+    train: 2400
+    test: 300
+    shadow: 300
+  stratify_by:
+    - source
+    - license

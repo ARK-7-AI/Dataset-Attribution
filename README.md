@@ -56,6 +56,7 @@ Run data splitting **before** training so manifests exist at `outputs/runs/<run_
 1. Split stage (first): load `configs/data.yaml`, select/subsample rows if configured, then write `train.csv`, `test.csv`, and `shadow.csv` into `outputs/runs/<run_id>/splits/`.
 
 - `dataset.subset_size` must be less than or equal to the source dataset row count; otherwise split generation fails fast with a clear error.
+- Use `configs/data.yaml` for the bundled sample dataset, or `configs/data_3000_template.yaml` when running the 3000-row architecture (2400/300/300).
 2. Training stage (second): load `configs/train_lora.yaml`, resolve `<run_id>` inside manifest paths, and train against the generated split manifests.
 
 
