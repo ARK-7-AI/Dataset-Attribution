@@ -13,7 +13,11 @@ from uuid import uuid4
 
 import yaml
 
-from src.training.data_loader import load_instruction_datasets, preflight_validate_data_paths
+from src.training.data_loader import (
+    load_instruction_datasets,
+    preflight_validate_data_paths,
+    validate_trainer_dataset,
+)
 
 
 def build_parser() -> ArgumentParser:
@@ -351,6 +355,21 @@ def run_training(config_path: str) -> Path:
     model = peft.get_peft_model(model, lora_config)
 
     train_dataset, eval_dataset = load_instruction_datasets(config=config, tokenizer=tokenizer)
+    padding_strategy = str(config.get("data", {}).get("padding", "max_length")).strip().lower()
+    normalized_padding = "dynamic" if padding_strategy in {"dynamic", "longest"} else "max_length"
+    validate_trainer_dataset(
+        train_dataset,
+        split_name="train",
+        max_seq_len=params["max_seq_len"],
+        padding=normalized_padding,
+    )
+    if eval_dataset is not None:
+        validate_trainer_dataset(
+            eval_dataset,
+            split_name="eval",
+            max_seq_len=params["max_seq_len"],
+            padding=normalized_padding,
+        )
 
     eval_strategy = str(params["eval_strategy"]).lower()
     if eval_dataset is None and eval_strategy != "no":
