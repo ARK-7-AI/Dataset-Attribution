@@ -88,6 +88,12 @@ def _validate_training_config(config: dict[str, Any]) -> None:
 
     _require_non_empty(data_cfg, "prompt_field", label="data.prompt_field")
     _require_non_empty(data_cfg, "response_field", label="data.response_field")
+    response_fallback_fields = data_cfg.get("response_fallback_fields", [])
+    if response_fallback_fields is not None:
+        if not isinstance(response_fallback_fields, list) or any(
+            not isinstance(field, str) or not field.strip() for field in response_fallback_fields
+        ):
+            raise ValueError("'data.response_fallback_fields' must be a list of non-empty field names")
 
     train_cfg = config.get("training")
     if not isinstance(train_cfg, dict):
@@ -149,7 +155,10 @@ def _get_config_params(config: dict[str, Any]) -> dict[str, Any]:
         "shadow_manifest_path": data_cfg.get("shadow_manifest_path"),
         "text_fields": data_cfg.get("text_fields", []),
         "prompt_field": data_cfg.get("prompt_field"),
+        "input_field": data_cfg.get("input_field"),
         "response_field": data_cfg.get("response_field"),
+        "response_fallback_fields": data_cfg.get("response_fallback_fields", []),
+        "normalize_response_key": bool(data_cfg.get("normalize_response_key", False)),
         "lora_rank": int(lora_cfg.get("rank", 8)),
         "lora_alpha": float(lora_cfg.get("alpha", 16)),
         "lora_dropout": float(lora_cfg.get("dropout", 0.0)),

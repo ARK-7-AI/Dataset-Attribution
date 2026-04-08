@@ -181,10 +181,20 @@ def _normalize_example(
     *,
     text_fields: list[str],
     prompt_field: str,
+    input_field: str | None,
     response_field: str,
+    response_fallback_fields: list[str],
 ) -> dict[str, str]:
     prompt = str(record.get(prompt_field) or "").strip()
+    prompt_input = str(record.get(input_field) or "").strip() if input_field else ""
     response = str(record.get(response_field) or "").strip()
+    tested_response_fields = [response_field, *response_fallback_fields]
+    if not response:
+        for fallback_field in response_fallback_fields:
+            candidate = str(record.get(fallback_field) or "").strip()
+            if candidate:
+                response = candidate
+                break
     fallback_text = ""
     for field in text_fields:
         value = str(record.get(field) or "").strip()
@@ -201,8 +211,12 @@ def _normalize_example(
         )
     if not response:
         raise ValueError(
-            f"Sample '{sample_id}' is missing target answer (response_field='{response_field}')"
+            f"Sample '{sample_id}' is missing target answer "
+            f"(tested_fields={tested_response_fields})"
         )
+
+    if prompt_input:
+        prompt = f"{prompt}\n\nInput:\n{prompt_input}"
 
     prompt_text = PROMPT_TEMPLATE.format(instruction=prompt)
     full_text = f"{prompt_text}{response}"
@@ -222,7 +236,9 @@ def _build_examples_for_split(
     *,
     text_fields: list[str],
     prompt_field: str,
+    input_field: str | None,
     response_field: str,
+    response_fallback_fields: list[str],
 ) -> list[dict[str, str]]:
     missing = sorted(sample_id for sample_id in sample_ids if sample_id not in record_index)
     if missing:
@@ -239,7 +255,9 @@ def _build_examples_for_split(
             record_index[sample_id],
             text_fields=text_fields,
             prompt_field=prompt_field,
+            input_field=input_field,
             response_field=response_field,
+            response_fallback_fields=response_fallback_fields,
         )
         for sample_id in sample_ids
     ]
@@ -275,12 +293,27 @@ def load_instruction_datasets(config: dict[str, Any], tokenizer: Any) -> tuple[A
 
     text_fields = [str(field).strip() for field in data_cfg.get("text_fields", []) if str(field).strip()]
     prompt_field = str(data_cfg.get("prompt_field") or "").strip()
+    input_field = str(data_cfg.get("input_field") or "").strip() or None
     response_field = str(data_cfg.get("response_field") or "").strip()
+    response_fallback_fields = [
+        str(field).strip() for field in data_cfg.get("response_fallback_fields", []) if str(field).strip()
+    ]
+    normalize_response_key = bool(data_cfg.get("normalize_response_key", False))
 
     max_seq_len = int(train_cfg.get("max_seq_len", 512))
 
     dataset_name = str(data_cfg.get("dataset_name") or dataset_path.stem).strip()
     records = _read_dataset_records(dataset_path, dataset_name=dataset_name)
+    if normalize_response_key:
+        for record in records:
+            response = str(record.get(response_field) or "").strip()
+            if not response:
+                for fallback_field in response_fallback_fields:
+                    candidate = str(record.get(fallback_field) or "").strip()
+                    if candidate:
+                        response = candidate
+                        break
+            record["response"] = response
 
     normalized_snapshot_path_raw = data_cfg.get("normalized_snapshot_path")
     if normalized_snapshot_path_raw:
@@ -296,7 +329,9 @@ def load_instruction_datasets(config: dict[str, Any], tokenizer: Any) -> tuple[A
         record_index,
         text_fields=text_fields,
         prompt_field=prompt_field,
+        input_field=input_field,
         response_field=response_field,
+        response_fallback_fields=response_fallback_fields,
     )
     test_examples = (
         _build_examples_for_split(
@@ -305,7 +340,9 @@ def load_instruction_datasets(config: dict[str, Any], tokenizer: Any) -> tuple[A
             record_index,
             text_fields=text_fields,
             prompt_field=prompt_field,
+            input_field=input_field,
             response_field=response_field,
+            response_fallback_fields=response_fallback_fields,
         )
         if test_ids
         else []

@@ -28,7 +28,10 @@ data:
   # Field mapping used to build supervised examples
   text_fields: [text, instruction]
   prompt_field: prompt
+  input_field: input
   response_field: response
+  response_fallback_fields: [output, answer, completion]
+  normalize_response_key: true
 
 training:
   batch_size: 2
