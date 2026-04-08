@@ -1,0 +1,14 @@
+[
+  {
+    "sample_id": "s1",
+    "prompt": "Say hello",
+    "response": "Hello!",
+    "text": "Say hello"
+  },
+  {
+    "sample_id": "s2",
+    "prompt": "Say goodbye",
+    "response": "Goodbye!",
+    "text": "Say goodbye"
+  }
+]

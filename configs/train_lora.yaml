@@ -7,8 +7,8 @@ tokenizer_name_or_path: null # optional override (defaults to model_name_or_path
 
 # Run output routing
 output_root: outputs/runs
-run_id: null
-auto_run_id: true
+run_id: default_run
+auto_run_id: false
 
 # LoRA adapter settings
 lora:
@@ -20,9 +20,10 @@ lora:
 
 # Dataset wiring
 data:
-  dataset_json_path: data/processed/dataset.json
-  train_manifest_path: outputs/runs/<run_id>/splits/train.csv
-  eval_manifest_path: outputs/runs/<run_id>/splits/test.csv # optional
+  dataset_json_path: data/alpaca_data.json
+  train_manifest_path: outputs/runs/default_run/splits/train.csv
+  test_manifest_path: outputs/runs/default_run/splits/test.csv
+  shadow_manifest_path: outputs/runs/default_run/splits/shadow.csv
 
   # Field mapping used to build supervised examples
   text_fields: [text, instruction]

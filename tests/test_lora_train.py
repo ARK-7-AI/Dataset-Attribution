@@ -33,6 +33,8 @@ def tiny_dataset_and_config(tmp_path: Path) -> tuple[Path, Path, Path]:
     splits_dir = run_root / "splits"
     splits_dir.mkdir(parents=True, exist_ok=True)
     (splits_dir / "train.csv").write_text("sample_id\ns1\ns2\n", encoding="utf-8")
+    (splits_dir / "test.csv").write_text("sample_id\ns1\n", encoding="utf-8")
+    (splits_dir / "shadow.csv").write_text("sample_id\ns2\n", encoding="utf-8")
 
     config_path = tmp_path / "train_lora.yaml"
     config_path.write_text(
@@ -45,6 +47,8 @@ def tiny_dataset_and_config(tmp_path: Path) -> tuple[Path, Path, Path]:
                 "data:",
                 f"  dataset_json_path: {dataset_path.as_posix()}",
                 f"  train_manifest_path: {splits_dir.as_posix()}/train.csv",
+                f"  test_manifest_path: {splits_dir.as_posix()}/test.csv",
+                f"  shadow_manifest_path: {splits_dir.as_posix()}/shadow.csv",
                 "  text_fields: [prompt, response]",
                 "  prompt_field: prompt",
                 "  response_field: response",
