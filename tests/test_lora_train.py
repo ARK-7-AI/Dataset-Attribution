@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 
 import pytest
+import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -125,6 +126,15 @@ def patch_training_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
         def from_pretrained(_: str, **__: object) -> FakeModel:
             return FakeModel()
 
+    class FakeConfig:
+        is_encoder_decoder = False
+        architectures = ["Qwen2ForCausalLM"]
+
+    class FakeAutoConfig:
+        @staticmethod
+        def from_pretrained(_: str) -> FakeConfig:
+            return FakeConfig()
+
     class FakeTrainingArguments:
         def __init__(self, **_: object) -> None:
             pass
@@ -150,6 +160,7 @@ def patch_training_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
 
     class FakeTransformers:
         AutoTokenizer = FakeAutoTokenizer
+        AutoConfig = FakeAutoConfig
         AutoModelForCausalLM = FakeAutoModel
         TrainingArguments = FakeTrainingArguments
         Trainer = FakeTrainer
@@ -264,3 +275,33 @@ def test_lora_training_outputs_are_gradient_logger_compatible(
     assert metadata["adapter_artifact"] == str(run_dir / "adapter")
     assert metadata["gradient_subset_size"] == 2
     assert metadata["parameter_names"]
+
+
+def test_default_train_config_uses_ungated_model_id() -> None:
+    config = yaml.safe_load(Path("configs/train_lora.yaml").read_text(encoding="utf-8"))
+    assert config["model_name_or_path"] == "Qwen/Qwen2.5-3B-Instruct"
+
+
+def test_model_compatibility_guard_rejects_non_causal_architecture() -> None:
+    class FakeTokenizer:
+        @staticmethod
+        def from_pretrained(_: str) -> object:
+            return object()
+
+    class FakeConfig:
+        is_encoder_decoder = True
+        architectures = ["T5ForConditionalGeneration"]
+
+    class FakeAutoConfig:
+        @staticmethod
+        def from_pretrained(_: str) -> FakeConfig:
+            return FakeConfig()
+
+    class FakeTransformers:
+        AutoTokenizer = FakeTokenizer
+        AutoConfig = FakeAutoConfig
+
+    config = {"model_name_or_path": "fake-model", "tokenizer_name_or_path": None}
+
+    with pytest.raises(ValueError, match="decoder-only causal LM"):
+        lora_train._validate_model_compatibility(config, FakeTransformers)

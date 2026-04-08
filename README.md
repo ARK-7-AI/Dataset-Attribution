@@ -41,6 +41,23 @@ Run data splitting **before** training so manifests exist at `outputs/runs/<run_
 1. Split stage (first): load `configs/data.yaml`, select/subsample rows if configured, then write `train.csv`, `test.csv`, and `shadow.csv` into `outputs/runs/<run_id>/splits/`.
 2. Training stage (second): load `configs/train_lora.yaml`, resolve `<run_id>` inside manifest paths, and train against the generated split manifests.
 
+
+## Baseline model selection (ungated)
+
+- Primary baseline model: `Qwen/Qwen2.5-3B-Instruct` (decoder-only causal LM, ungated).
+- Fallback baseline model: `microsoft/Phi-3.5-mini-instruct` (also ungated, ~3.8B params).
+- Reason for swap: avoid gated-access failures from `meta-llama/Llama-3.2-3B-Instruct` while keeping similar parameter scale for apples-to-apples LoRA experiments.
+
+### Expected hardware footprint
+
+For ~3B class instruct models with LoRA adapters:
+
+- bf16/fp16 training (default config): typically ~16-24 GB VRAM depending on sequence length/checkpointing.
+- optional 8-bit loading: often ~10-14 GB VRAM.
+- optional 4-bit loading: often ~8-12 GB VRAM with possible throughput/quality trade-offs.
+
+If memory is constrained, reduce `training.batch_size`, raise `training.gradient_accumulation_steps`, and consider `load_in_8bit`/`load_in_4bit`.
+
 ## Exact command to start LoRA training
 
 ```bash
