@@ -13,6 +13,18 @@ from typing import Any
 PROMPT_TEMPLATE = "### Instruction:\n{instruction}\n\n### Response:\n"
 
 
+def _is_under_src(path: Path) -> bool:
+    normalized = Path(*path.parts)
+    return any(part == "src" for part in normalized.parts)
+
+
+def _reject_src_data_path(path: Path, *, label: str) -> None:
+    if _is_under_src(path):
+        raise ValueError(
+            f"{label} must not live under 'src/'. Move data files to 'data/raw/' and point config there: '{path}'."
+        )
+
+
 def _closest_existing_path_suggestion(path: Path) -> str | None:
     probe = path
     while not probe.exists() and probe.parent != probe:
@@ -55,6 +67,7 @@ def preflight_validate_data_paths(config: dict[str, Any]) -> dict[str, Path | No
     if not dataset_path_raw:
         raise ValueError("Config must define original dataset JSON path at 'data.dataset_json_path'")
     dataset_path = Path(str(dataset_path_raw))
+    _reject_src_data_path(dataset_path, label="Dataset JSON")
     if not dataset_path.exists():
         _raise_missing_path_error(dataset_path, label="Dataset JSON")
 
@@ -62,16 +75,21 @@ def preflight_validate_data_paths(config: dict[str, Any]) -> dict[str, Path | No
     if not train_manifest_raw:
         raise ValueError("Config must define 'data.train_manifest_path'")
     train_manifest_path = Path(str(train_manifest_raw))
+    _reject_src_data_path(train_manifest_path, label="Train manifest")
     if not train_manifest_path.exists():
         _raise_missing_path_error(train_manifest_path, label="Train manifest")
 
     test_manifest_raw = data_cfg.get("test_manifest_path") or data_cfg.get("eval_manifest_path")
     test_manifest_path = Path(str(test_manifest_raw)) if test_manifest_raw else None
+    if test_manifest_path:
+        _reject_src_data_path(test_manifest_path, label="Test manifest")
     if test_manifest_path and not test_manifest_path.exists():
         _raise_missing_path_error(test_manifest_path, label="Test manifest")
 
     shadow_manifest_raw = data_cfg.get("shadow_manifest_path")
     shadow_manifest_path = Path(str(shadow_manifest_raw)) if shadow_manifest_raw else None
+    if shadow_manifest_path:
+        _reject_src_data_path(shadow_manifest_path, label="Shadow manifest")
     if shadow_manifest_path and not shadow_manifest_path.exists():
         _raise_missing_path_error(shadow_manifest_path, label="Shadow manifest")
 

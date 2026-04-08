@@ -186,7 +186,12 @@ def select_subset(
 
     if subset_size <= 0:
         raise ValueError("subset_size must be positive")
-    if subset_size >= len(records):
+    if subset_size > len(records):
+        raise ValueError(
+            f"subset_size ({subset_size}) cannot exceed dataset size ({len(records)}). "
+            "Provide a larger source dataset or lower dataset.subset_size in config."
+        )
+    if subset_size == len(records):
         return list(records)
 
     strata: dict[tuple[str, ...], list[dict[str, str]]] = {}
