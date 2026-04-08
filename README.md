@@ -56,6 +56,32 @@ During training ingestion, JSON rows are validated strictly:
 
 Optional: set `data.normalized_snapshot_path` (for example `data/processed/alpaca_normalized.json`) in training config to persist the normalized records used for split-manifest joins.
 
+### Training ingestion schema mapping (including Alpaca)
+
+The LoRA training loader supports configurable field mapping under `data` in `configs/train_lora.yaml`:
+
+- `prompt_field` (required): primary instruction/prompt key.
+- `input_field` (optional): additional context key (for Alpaca's `input`), appended into prompt text when present.
+- `response_field` (required): primary target/answer key.
+- `response_fallback_fields` (optional list): fallback keys tested in order if `response_field` is missing/empty.
+- `normalize_response_key` (optional bool): when enabled, preprocessing writes canonical `response` for every row using `response_field` + fallbacks.
+
+Supported JSON schema examples:
+
+- Existing prompt/response style:
+  - `{"prompt": "...", "response": "..."}`
+- Alpaca default style:
+  - `{"instruction": "...", "input": "...", "output": "..."}`
+
+Recommended Alpaca mapping:
+
+- `prompt_field: instruction`
+- `input_field: input`
+- `response_field: response`
+- `response_fallback_fields: [output, answer, completion]`
+
+If no non-empty target is found across `response_field` + `response_fallback_fields`, training fails fast with a `ValueError` that includes the row `sample_id` and all tested field names.
+
 ## LoRA data pipeline run order
 
 Run data splitting **before** training so manifests exist at `outputs/runs/<run_id>/splits/*.csv` and training can resolve `data.train_manifest_path` / `data.test_manifest_path`.

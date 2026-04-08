@@ -160,3 +160,74 @@ def test_loader_rejects_malformed_record_with_index(tmp_path: Path, monkeypatch:
 
     with pytest.raises(ValueError, match=r"index 0"):
         load_instruction_datasets(config=config, tokenizer=FakeTokenizer())
+
+
+def test_loader_accepts_alpaca_output_via_response_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset_path = tmp_path / "dataset.json"
+    dataset_path.write_text(
+        json.dumps([{"sample_id": "s1", "instruction": "Summarize this", "output": "Done."}]),
+        encoding="utf-8",
+    )
+
+    splits_dir = tmp_path / "runs" / "run-a" / "splits"
+    splits_dir.mkdir(parents=True, exist_ok=True)
+    (splits_dir / "train.csv").write_text("sample_id\ns1\n", encoding="utf-8")
+
+    config = {
+        "run_id": "run-a",
+        "output_root": str(tmp_path / "runs"),
+        "data": {
+            "path": str(dataset_path),
+            "train_manifest_path": str(splits_dir / "train.csv"),
+            "text_fields": ["instruction", "output"],
+            "prompt_field": "instruction",
+            "response_field": "response",
+            "response_fallback_fields": ["output", "answer", "completion"],
+        },
+        "training": {"max_seq_len": 8},
+    }
+
+    monkeypatch.setattr("src.training.data_loader.importlib.import_module", lambda _: FakeDatasetsModule)
+
+    train_dataset, eval_dataset = load_instruction_datasets(config=config, tokenizer=FakeTokenizer())
+
+    assert eval_dataset is None
+    assert train_dataset.rows[0]["sample_id"] == "s1"
+
+
+def test_loader_errors_with_sample_id_and_tested_fields_when_target_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset_path = tmp_path / "dataset.json"
+    dataset_path.write_text(
+        json.dumps([{"sample_id": "s1", "instruction": "Summarize this"}]),
+        encoding="utf-8",
+    )
+
+    splits_dir = tmp_path / "runs" / "run-a" / "splits"
+    splits_dir.mkdir(parents=True, exist_ok=True)
+    (splits_dir / "train.csv").write_text("sample_id\ns1\n", encoding="utf-8")
+
+    config = {
+        "run_id": "run-a",
+        "output_root": str(tmp_path / "runs"),
+        "data": {
+            "path": str(dataset_path),
+            "train_manifest_path": str(splits_dir / "train.csv"),
+            "text_fields": ["instruction"],
+            "prompt_field": "instruction",
+            "response_field": "response",
+            "response_fallback_fields": ["output", "answer", "completion"],
+        },
+        "training": {"max_seq_len": 8},
+    }
+
+    monkeypatch.setattr("src.training.data_loader.importlib.import_module", lambda _: FakeDatasetsModule)
+
+    with pytest.raises(
+        ValueError,
+        match=r"Sample 's1' is missing target answer \(tested_fields=\['response', 'output', 'answer', 'completion'\]\)",
+    ):
+        load_instruction_datasets(config=config, tokenizer=FakeTokenizer())
