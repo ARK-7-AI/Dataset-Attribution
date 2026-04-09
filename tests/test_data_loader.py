@@ -7,7 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from src.training.data_loader import load_instruction_datasets, preflight_validate_data_paths
+from src.training.data_loader import (
+    COLLATOR_PATH_LM,
+    COLLATOR_PATH_PADDING,
+    load_instruction_datasets,
+    preflight_validate_data_paths,
+    validate_dataset_schema_for_collator,
+)
 
 
 class FakeTokenizer:
@@ -133,7 +139,7 @@ def test_loader_normalizes_missing_sample_id_source_license(tmp_path: Path, monk
     train_dataset, eval_dataset = load_instruction_datasets(config=config, tokenizer=FakeTokenizer())
 
     assert eval_dataset is None
-    assert set(train_dataset.rows[0].keys()) == {"input_ids", "attention_mask", "labels"}
+    assert set(train_dataset.rows[0].keys()) == {"input_ids", "attention_mask"}
 
     normalized_snapshot = Path(config["data"]["normalized_snapshot_path"])
     parsed_snapshot = json.loads(normalized_snapshot.read_text(encoding="utf-8"))
@@ -201,7 +207,7 @@ def test_loader_accepts_alpaca_output_via_response_fallback(
     train_dataset, eval_dataset = load_instruction_datasets(config=config, tokenizer=FakeTokenizer())
 
     assert eval_dataset is None
-    assert set(train_dataset.rows[0].keys()) == {"input_ids", "attention_mask", "labels"}
+    assert set(train_dataset.rows[0].keys()) == {"input_ids", "attention_mask"}
 
 
 def test_loader_errors_with_sample_id_and_tested_fields_when_target_missing(
@@ -279,7 +285,7 @@ def test_loader_removes_metadata_fields_from_model_inputs(
     monkeypatch.setattr("src.training.data_loader.importlib.import_module", lambda _: FakeDatasetsModule)
 
     train_dataset, _ = load_instruction_datasets(config=config, tokenizer=FakeTokenizer())
-    assert set(train_dataset.rows[0].keys()) == {"input_ids", "attention_mask", "labels"}
+    assert set(train_dataset.rows[0].keys()) == {"input_ids", "attention_mask"}
 
 
 def test_loader_dynamic_padding_allows_variable_length_examples(
@@ -350,4 +356,56 @@ def test_loader_applies_truncation_and_max_length_padding(
     row = train_dataset.rows[0]
     assert len(row["input_ids"]) == 5
     assert len(row["attention_mask"]) == 5
-    assert row["labels"] == row["input_ids"]
+    assert "labels" not in row
+
+
+def test_no_nested_labels_with_lm_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    dataset_path = tmp_path / "dataset.json"
+    dataset_path.write_text(
+        json.dumps([{"sample_id": "s1", "prompt": "one two", "response": "ok"}]),
+        encoding="utf-8",
+    )
+    splits_dir = tmp_path / "runs" / "run-a" / "splits"
+    splits_dir.mkdir(parents=True, exist_ok=True)
+    (splits_dir / "train.csv").write_text("sample_id\ns1\n", encoding="utf-8")
+
+    config = {
+        "run_id": "run-a",
+        "output_root": str(tmp_path / "runs"),
+        "data": {
+            "path": str(dataset_path),
+            "train_manifest_path": str(splits_dir / "train.csv"),
+            "text_fields": ["prompt", "response"],
+            "prompt_field": "prompt",
+            "response_field": "response",
+            "padding": "dynamic",
+        },
+        "training": {"max_seq_len": 32},
+    }
+    monkeypatch.setattr("src.training.data_loader.importlib.import_module", lambda _: FakeDatasetsModule)
+
+    train_dataset, _ = load_instruction_datasets(config=config, tokenizer=FakeTokenizer())
+    row = train_dataset.rows[0]
+    assert "labels" not in row
+    assert isinstance(row["input_ids"], list)
+    assert all(isinstance(v, int) for v in row["input_ids"])
+
+
+def test_collator_schema_validator_rejects_wrong_combination() -> None:
+    class InlineDataset:
+        def __init__(self, rows: list[dict[str, object]]) -> None:
+            self.rows = rows
+
+    with pytest.raises(ValueError, match="includes labels"):
+        validate_dataset_schema_for_collator(
+            InlineDataset([{"input_ids": [1], "attention_mask": [1], "labels": [1]}]),
+            split_name="train",
+            collator_path=COLLATOR_PATH_LM,
+        )
+
+    with pytest.raises(ValueError, match=r"must include labels as list\[int\]"):
+        validate_dataset_schema_for_collator(
+            InlineDataset([{"input_ids": [1], "attention_mask": [1]}]),
+            split_name="train",
+            collator_path=COLLATOR_PATH_PADDING,
+        )

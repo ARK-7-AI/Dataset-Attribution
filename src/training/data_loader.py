@@ -263,6 +263,10 @@ def _build_examples_for_split(
     ]
 
 
+COLLATOR_PATH_LM = "lm_generate_labels"
+COLLATOR_PATH_PADDING = "padding_requires_labels"
+
+
 def _tokenize_examples(
     examples: list[dict[str, str]],
     tokenizer: Any,
@@ -281,16 +285,20 @@ def _tokenize_examples(
             {
                 "input_ids": list(encoded["input_ids"]),
                 "attention_mask": list(encoded["attention_mask"]),
-                "labels": list(encoded["input_ids"]),
             }
         )
     return tokenized_rows
 
 
 def _validate_model_tensor_fields(
-    rows: list[dict[str, Any]], *, max_seq_len: int, padding: str, split_name: str
+    rows: list[dict[str, Any]],
+    *,
+    max_seq_len: int,
+    padding: str,
+    split_name: str,
+    require_labels: bool,
 ) -> None:
-    expected_fields = {"input_ids", "attention_mask", "labels"}
+    expected_fields = {"input_ids", "attention_mask", "labels"} if require_labels else {"input_ids", "attention_mask"}
     for row_idx, row in enumerate(rows):
         row_fields = set(row)
         if row_fields != expected_fields:
@@ -301,20 +309,27 @@ def _validate_model_tensor_fields(
 
         input_ids = row["input_ids"]
         attention_mask = row["attention_mask"]
-        labels = row["labels"]
+        labels = row.get("labels")
         if not isinstance(input_ids, list) or not all(isinstance(v, int) for v in input_ids):
             raise ValueError(f"{split_name}[{row_idx}].input_ids must be list[int]")
         if not isinstance(attention_mask, list) or not all(isinstance(v, int) for v in attention_mask):
             raise ValueError(f"{split_name}[{row_idx}].attention_mask must be list[int]")
-        if not isinstance(labels, list) or not all(isinstance(v, int) for v in labels):
+        if require_labels and (
+            not isinstance(labels, list) or not all(isinstance(v, int) for v in labels)
+        ):
             raise ValueError(f"{split_name}[{row_idx}].labels must be list[int]")
 
         if not input_ids:
             raise ValueError(f"{split_name}[{row_idx}] is empty after tokenization")
-        if len(input_ids) != len(attention_mask) or len(input_ids) != len(labels):
+        if len(input_ids) != len(attention_mask):
             raise ValueError(
                 f"{split_name}[{row_idx}] has mismatched sequence lengths: "
-                f"input_ids={len(input_ids)} attention_mask={len(attention_mask)} labels={len(labels)}"
+                f"input_ids={len(input_ids)} attention_mask={len(attention_mask)}"
+            )
+        if require_labels and isinstance(labels, list) and len(input_ids) != len(labels):
+            raise ValueError(
+                f"{split_name}[{row_idx}] has mismatched sequence lengths: "
+                f"input_ids={len(input_ids)} labels={len(labels)}"
             )
         if padding == "max_length" and len(input_ids) != max_seq_len:
             raise ValueError(
@@ -410,6 +425,7 @@ def load_instruction_datasets(config: dict[str, Any], tokenizer: Any) -> tuple[A
         max_seq_len=max_seq_len,
         padding=validation_padding,
         split_name="train",
+        require_labels=False,
     )
 
     train_dataset = datasets_mod.Dataset.from_list(train_rows)
@@ -426,6 +442,7 @@ def load_instruction_datasets(config: dict[str, Any], tokenizer: Any) -> tuple[A
             max_seq_len=max_seq_len,
             padding=validation_padding,
             split_name="eval",
+            require_labels=False,
         )
         eval_dataset = datasets_mod.Dataset.from_list(eval_rows)
 
@@ -438,8 +455,44 @@ def validate_trainer_dataset(
     split_name: str,
     max_seq_len: int,
     padding: str,
+    require_labels: bool,
 ) -> None:
     rows = getattr(dataset, "rows", None)
     if rows is None:
         rows = [dataset[index] for index in range(len(dataset))]
-    _validate_model_tensor_fields(rows, max_seq_len=max_seq_len, padding=padding, split_name=split_name)
+    _validate_model_tensor_fields(
+        rows,
+        max_seq_len=max_seq_len,
+        padding=padding,
+        split_name=split_name,
+        require_labels=require_labels,
+    )
+
+
+def validate_dataset_schema_for_collator(dataset: Any, *, split_name: str, collator_path: str) -> None:
+    """Validate that dataset row schema matches the configured collator pathway."""
+    rows = getattr(dataset, "rows", None)
+    if rows is None:
+        rows = [dataset[index] for index in range(len(dataset))]
+
+    for row_idx, row in enumerate(rows):
+        if collator_path == COLLATOR_PATH_LM:
+            if "labels" in row:
+                raise ValueError(
+                    f"{split_name}[{row_idx}] includes labels, but LM collator pathway expects only "
+                    "input_ids and attention_mask."
+                )
+            continue
+
+        if collator_path == COLLATOR_PATH_PADDING:
+            labels = row.get("labels")
+            if not isinstance(labels, list) or not all(isinstance(v, int) for v in labels):
+                raise ValueError(
+                    f"{split_name}[{row_idx}] must include labels as list[int] for padding collator pathway."
+                )
+            continue
+
+        raise ValueError(
+            f"Unsupported collator_path='{collator_path}'. "
+            f"Expected one of: {COLLATOR_PATH_LM}, {COLLATOR_PATH_PADDING}"
+        )

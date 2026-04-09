@@ -187,6 +187,24 @@ def patch_training_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
                 self.tokenizer = tokenizer
                 self.mlm = mlm
 
+            def __call__(self, features: list[dict[str, list[int]]]) -> dict[str, list[list[int]]]:
+                max_len = max(len(feature["input_ids"]) for feature in features)
+                input_ids = []
+                attention_mask = []
+                labels = []
+                for feature in features:
+                    tokens = list(feature["input_ids"])
+                    mask = list(feature["attention_mask"])
+                    pad = max_len - len(tokens)
+                    input_ids.append(tokens + ([0] * pad))
+                    attention_mask.append(mask + ([0] * pad))
+                    labels.append(tokens + ([-100] * pad))
+                return {
+                    "input_ids": input_ids,
+                    "attention_mask": attention_mask,
+                    "labels": labels,
+                }
+
     class FakeTaskType:
         CAUSAL_LM = "CAUSAL_LM"
 
@@ -423,3 +441,60 @@ def test_resolve_model_loading_strategy_respects_explicit_offload() -> None:
     assert strategy["single_gpu_training"] is True
     assert strategy["explicit_offload"] is True
     assert strategy["use_single_gpu_cuda_placement"] is False
+
+
+def test_preflight_validate_batch_collation_raises_clear_error() -> None:
+    class FakeTorch:
+        long = "long"
+
+        @staticmethod
+        def tensor(value: object, dtype: object | None = None) -> object:
+            raise RuntimeError("Unable to create tensor")
+
+    class FakeCollator:
+        def __call__(self, features: list[dict[str, list[int]]]) -> dict[str, list[list[int]]]:
+            return {
+                "input_ids": [feature["input_ids"] for feature in features],
+                "attention_mask": [feature["attention_mask"] for feature in features],
+                "labels": [[1, 2], [3]],
+            }
+
+    class FakeDataset:
+        rows = [{"input_ids": [1, 2], "attention_mask": [1, 1]}]
+
+    with pytest.raises(ValueError, match="Preflight tensor creation failed"):
+        lora_train.preflight_validate_batch_collation(
+            dataset=FakeDataset(),
+            data_collator=FakeCollator(),
+            torch_mod=FakeTorch,
+            batch_size=1,
+            split_name="train",
+        )
+
+
+def test_preflight_validate_batch_collation_detects_missing_labels() -> None:
+    class FakeTorch:
+        long = "long"
+
+        @staticmethod
+        def tensor(value: object, dtype: object | None = None) -> object:
+            return {"value": value, "dtype": dtype}
+
+    class MissingLabelsCollator:
+        def __call__(self, features: list[dict[str, list[int]]]) -> dict[str, list[list[int]]]:
+            return {
+                "input_ids": [feature["input_ids"] for feature in features],
+                "attention_mask": [feature["attention_mask"] for feature in features],
+            }
+
+    class FakeDataset:
+        rows = [{"input_ids": [1], "attention_mask": [1]}]
+
+    with pytest.raises(ValueError, match="missing required batch key: labels"):
+        lora_train.preflight_validate_batch_collation(
+            dataset=FakeDataset(),
+            data_collator=MissingLabelsCollator(),
+            torch_mod=FakeTorch,
+            batch_size=1,
+            split_name="train",
+        )

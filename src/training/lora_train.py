@@ -16,10 +16,18 @@ import yaml
 
 from src.training.data_loader import (
     load_instruction_datasets,
+    COLLATOR_PATH_LM,
     preflight_validate_data_paths,
+    validate_dataset_schema_for_collator,
     validate_trainer_dataset,
 )
 
+
+
+
+# Standardized collation pathway: dataset rows must not include labels;
+# DataCollatorForLanguageModeling(mlm=False) creates labels from input_ids.
+STANDARD_COLLATOR_PATHWAY = COLLATOR_PATH_LM
 
 def build_parser() -> ArgumentParser:
     """Build CLI parser for the LoRA training entrypoint."""
@@ -316,6 +324,57 @@ def _build_trainer_kwargs(
     return kwargs
 
 
+
+def _get_dataset_rows(dataset: Any) -> list[dict[str, Any]]:
+    rows = getattr(dataset, "rows", None)
+    if rows is not None:
+        return list(rows)
+    return [dataset[index] for index in range(len(dataset))]
+
+
+def preflight_validate_batch_collation(
+    *,
+    dataset: Any,
+    data_collator: Any,
+    torch_mod: Any,
+    batch_size: int,
+    split_name: str,
+) -> None:
+    """Run a tiny preflight collation to fail early on tensor-shape/schema issues."""
+    rows = _get_dataset_rows(dataset)
+    if not rows:
+        raise ValueError(f"{split_name} dataset is empty; unable to preflight collation")
+
+    sample_count = max(1, min(int(batch_size), 2, len(rows)))
+    sample_rows = rows[:sample_count]
+
+    try:
+        batch = data_collator(sample_rows)
+    except Exception as exc:
+        raise ValueError(
+            f"Preflight collation failed for {split_name} split with {sample_count} sample(s). "
+            "Check dataset schema vs collator pathway compatibility."
+        ) from exc
+
+    if not isinstance(batch, dict):
+        raise ValueError(
+            f"Preflight collation returned unexpected type {type(batch).__name__}; expected dict"
+        )
+
+    for key in ("input_ids", "attention_mask", "labels"):
+        if key not in batch:
+            raise ValueError(f"Preflight collation missing required batch key: {key}")
+        value = batch[key]
+        if isinstance(value, (list, tuple)):
+            try:
+                torch_mod.tensor(value, dtype=torch_mod.long)
+            except Exception as exc:
+                raise ValueError(
+                    f"Preflight tensor creation failed for batch['{key}']; "
+                    "likely incompatible nested feature shapes."
+                ) from exc
+
+
 def _persist_run_outputs(
     run_dir: Path,
     params: dict[str, Any],
@@ -512,6 +571,7 @@ def run_training(config_path: str) -> Path:
         split_name="train",
         max_seq_len=params["max_seq_len"],
         padding=normalized_padding,
+        require_labels=False,
     )
     if eval_dataset is not None:
         validate_trainer_dataset(
@@ -519,6 +579,15 @@ def run_training(config_path: str) -> Path:
             split_name="eval",
             max_seq_len=params["max_seq_len"],
             padding=normalized_padding,
+            require_labels=False,
+        )
+
+    validate_dataset_schema_for_collator(
+        train_dataset, split_name="train", collator_path=STANDARD_COLLATOR_PATHWAY
+    )
+    if eval_dataset is not None:
+        validate_dataset_schema_for_collator(
+            eval_dataset, split_name="eval", collator_path=STANDARD_COLLATOR_PATHWAY
         )
     tokenize_elapsed_s = time.perf_counter() - tokenize_start
     timing_breakdown_s["dataset_load_tokenization"] = float(tokenize_elapsed_s)
@@ -554,6 +623,14 @@ def run_training(config_path: str) -> Path:
     )
 
     data_collator = transformers.DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+
+    preflight_validate_batch_collation(
+        dataset=train_dataset,
+        data_collator=data_collator,
+        torch_mod=torch,
+        batch_size=params["batch_size"],
+        split_name="train",
+    )
 
     trainer = transformers.Trainer(
         **_build_trainer_kwargs(
