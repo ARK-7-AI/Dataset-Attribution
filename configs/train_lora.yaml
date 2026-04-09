@@ -32,6 +32,7 @@ data:
   response_field: response
   response_fallback_fields: [output, answer, completion]
   normalize_response_key: true
+  padding: dynamic
 
 training:
   batch_size: 2
