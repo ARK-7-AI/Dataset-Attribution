@@ -305,6 +305,14 @@ def test_run_training_writes_expected_artifacts(
     assert metrics["padding_strategy"] in {"dynamic", "max_length"}
     assert metrics["padding_benchmark"]["benchmark_target"] == "max_length_baseline"
     assert metrics["padding_benchmark"]["observed_steps_per_second"] > 0
+    assert metrics["time_config_path_validation_s"] >= 0
+    assert metrics["time_model_tokenizer_load_s"] >= 0
+    assert metrics["time_dataset_load_tokenization_s"] >= 0
+    assert metrics["time_trainer_train_loop_s"] >= 0
+    assert metrics["timing_breakdown_s"]["config_path_validation"] >= 0
+    assert metrics["timing_breakdown_s"]["model_tokenizer_load"] >= 0
+    assert metrics["timing_breakdown_s"]["dataset_load_tokenization"] >= 0
+    assert metrics["timing_breakdown_s"]["trainer_train_loop"] >= 0
 
     assert params["lora_rank"] == 4
     assert params["lora_alpha"] == 8.0

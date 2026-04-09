@@ -402,6 +402,7 @@ def run_training(config_path: str) -> Path:
     peft = importlib.import_module("peft")
     torch = importlib.import_module("torch")
     accelerate = importlib.import_module("accelerate")
+    timing_breakdown_s: dict[str, float] = {}
 
     print(
         "[startup] effective_versions "
@@ -410,6 +411,8 @@ def run_training(config_path: str) -> Path:
         f"peft={_resolve_package_version(peft)}"
     )
 
+    config_validation_start = time.perf_counter()
+    print("[timing] phase=config_path_validation status=start")
     config = _load_config(config_path)
     config["config_path"] = str(config_path)
     _validate_training_config(config)
@@ -422,24 +425,21 @@ def run_training(config_path: str) -> Path:
         path_value = data_cfg.get(path_key)
         if isinstance(path_value, str):
             data_cfg[path_key] = path_value.replace("<run_id>", run_id)
-
     preflight_validate_data_paths(config)
+    config_validation_elapsed_s = time.perf_counter() - config_validation_start
+    timing_breakdown_s["config_path_validation"] = float(config_validation_elapsed_s)
+    print(
+        "[timing] phase=config_path_validation status=end "
+        f"elapsed_s={config_validation_elapsed_s:.3f}"
+    )
 
     run_dir = Path(str(params["output_dir"])) / run_id
     train_dir = run_dir / "train"
     train_dir.mkdir(parents=True, exist_ok=True)
 
-    compatibility_start = time.perf_counter()
-    print("[timing] phase=compatibility_checks status=start")
-    _validate_model_compatibility(config, transformers)
-    compatibility_elapsed_s = time.perf_counter() - compatibility_start
-    print(
-        "[timing] phase=compatibility_checks status=end "
-        f"elapsed_s={compatibility_elapsed_s:.3f}"
-    )
-
     model_load_start = time.perf_counter()
-    print("[timing] phase=model_load status=start")
+    print("[timing] phase=model_tokenizer_load status=start")
+    _validate_model_compatibility(config, transformers)
 
     tokenizer = transformers.AutoTokenizer.from_pretrained(str(params["tokenizer_name_or_path"]))
     if tokenizer.pad_token is None:
@@ -496,13 +496,14 @@ def run_training(config_path: str) -> Path:
     if use_single_gpu_cuda_placement:
         model = model.to("cuda")
     model_load_elapsed_s = time.perf_counter() - model_load_start
+    timing_breakdown_s["model_tokenizer_load"] = float(model_load_elapsed_s)
     print(
-        "[timing] phase=model_load status=end "
+        "[timing] phase=model_tokenizer_load status=end "
         f"elapsed_s={model_load_elapsed_s:.3f}"
     )
 
     tokenize_start = time.perf_counter()
-    print("[timing] phase=dataset_load_normalize_tokenize status=start")
+    print("[timing] phase=dataset_load_tokenization status=start")
     train_dataset, eval_dataset = load_instruction_datasets(config=config, tokenizer=tokenizer)
     padding_strategy = str(config.get("data", {}).get("padding", "max_length")).strip().lower()
     normalized_padding = "dynamic" if padding_strategy in {"dynamic", "longest"} else "max_length"
@@ -520,8 +521,9 @@ def run_training(config_path: str) -> Path:
             padding=normalized_padding,
         )
     tokenize_elapsed_s = time.perf_counter() - tokenize_start
+    timing_breakdown_s["dataset_load_tokenization"] = float(tokenize_elapsed_s)
     print(
-        "[timing] phase=dataset_load_normalize_tokenize status=end "
+        "[timing] phase=dataset_load_tokenization status=end "
         f"elapsed_s={tokenize_elapsed_s:.3f}"
     )
 
@@ -580,6 +582,7 @@ def run_training(config_path: str) -> Path:
     print("[timing] phase=trainer_train status=start")
     train_result = trainer.train()
     train_elapsed_s = time.perf_counter() - train_start
+    timing_breakdown_s["trainer_train_loop"] = float(train_elapsed_s)
     print(
         "[timing] phase=trainer_train status=end "
         f"elapsed_s={train_elapsed_s:.3f}"
@@ -612,10 +615,11 @@ def run_training(config_path: str) -> Path:
         "steps": int(training_metrics.get("global_step", 0)),
         "train_steps_per_second": observed_steps_per_second,
         "epochs_completed": float(training_metrics.get("epoch", params["epochs"])),
-        "time_compatibility_checks_s": float(compatibility_elapsed_s),
-        "time_model_load_s": float(model_load_elapsed_s),
-        "time_tokenize_s": float(tokenize_elapsed_s),
-        "time_train_s": float(train_elapsed_s),
+        "time_config_path_validation_s": float(config_validation_elapsed_s),
+        "time_model_tokenizer_load_s": float(model_load_elapsed_s),
+        "time_dataset_load_tokenization_s": float(tokenize_elapsed_s),
+        "time_trainer_train_loop_s": float(train_elapsed_s),
+        "timing_breakdown_s": timing_breakdown_s,
         "padding_strategy": normalized_padding,
         "padding_benchmark": {
             "benchmark_target": "max_length_baseline",
