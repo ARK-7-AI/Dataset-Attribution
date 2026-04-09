@@ -229,6 +229,26 @@ def _resolve_package_version(module: Any) -> str:
     return str(getattr(module, "__version__", "unknown"))
 
 
+def _build_model_device_summary(model: Any) -> str:
+    """Build a compact model-device summary string for logging."""
+    try:
+        parameter_devices = sorted({str(param.device) for param in model.parameters()})
+    except Exception:
+        parameter_devices = ["unknown"]
+
+    try:
+        first_param_device = str(next(model.parameters()).device)
+    except StopIteration:
+        first_param_device = "none"
+    except Exception:
+        first_param_device = "unknown"
+
+    return (
+        f"first_param_device={first_param_device} "
+        f"unique_parameter_devices={parameter_devices}"
+    )
+
+
 def _build_trainer_kwargs(
     transformers: Any,
     *,
@@ -331,9 +351,15 @@ def run_training(config_path: str) -> Path:
         raise ValueError("Only one quantized load mode can be enabled: load_in_4bit or load_in_8bit")
 
     model_load_kwargs: dict[str, Any] = {
-        "device_map": params["device_map"],
         "torch_dtype": resolved_dtype,
     }
+    cuda_available = bool(torch.cuda.is_available())
+    cuda_device_count = int(torch.cuda.device_count()) if cuda_available else 0
+    quantized_load = bool(params["load_in_4bit"] or params["load_in_8bit"])
+    single_gpu_non_quantized = cuda_available and cuda_device_count == 1 and not quantized_load
+
+    if not single_gpu_non_quantized:
+        model_load_kwargs["device_map"] = params["device_map"]
     if params["load_in_4bit"]:
         model_load_kwargs["load_in_4bit"] = True
     if params["load_in_8bit"]:
@@ -343,7 +369,6 @@ def run_training(config_path: str) -> Path:
         str(params["base_model_path"]),
         **model_load_kwargs,
     )
-
     lora_config = peft.LoraConfig(
         r=params["lora_rank"],
         lora_alpha=params["lora_alpha"],
@@ -353,6 +378,8 @@ def run_training(config_path: str) -> Path:
         target_modules=params["lora_target_modules"],
     )
     model = peft.get_peft_model(model, lora_config)
+    if single_gpu_non_quantized:
+        model = model.to("cuda")
 
     train_dataset, eval_dataset = load_instruction_datasets(config=config, tokenizer=tokenizer)
     padding_strategy = str(config.get("data", {}).get("padding", "max_length")).strip().lower()
@@ -394,6 +421,7 @@ def run_training(config_path: str) -> Path:
         seed=params["seed"],
         report_to=[],
         remove_unused_columns=False,
+        disable_tqdm=False,
     )
 
     data_collator = transformers.DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
@@ -408,6 +436,14 @@ def run_training(config_path: str) -> Path:
             tokenizer=tokenizer,
             data_collator=data_collator,
         )
+    )
+    print(
+        "[startup] model_device_summary "
+        f"cuda_available={cuda_available} "
+        f"cuda_device_count={cuda_device_count} "
+        f"single_gpu_non_quantized={single_gpu_non_quantized} "
+        f"quantized_load={quantized_load} "
+        f"{_build_model_device_summary(model)}"
     )
 
     train_result = trainer.train()
