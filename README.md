@@ -151,6 +151,8 @@ How to find `run_id`:
 - `device_map: auto` (default in `configs/train_lora.yaml`) lets Transformers place model weights automatically, typically preferring GPU when available.
 - In single-GPU training without quantization/offload, `src.training.lora_train` now omits `device_map` and keeps the model fully on CUDA.
 - A Colab-ready profile is available at `configs/profiles/colab_train_lora.yaml`; it sets `device_map: null` to avoid `device_map: auto` during training runs.
+- For quick, stable LR comparisons, use `configs/profiles/colab_lr_sweep_stable.yaml` (2e-4, 1e-4, 5e-5) with fixed `seed: 42` and `max_steps: 120`.
+- Keep the default Colab LR at `2e-4` unless run metrics show clear evidence that a higher LR is better.
 - For CPU-only runs, set `device_map: cpu` in the training config.
 - Startup logs print the final placement decision (`resolved_device_map`, placement flags, and parameter-device summary).
 
