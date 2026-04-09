@@ -8,6 +8,7 @@ import importlib
 import inspect
 import json
 from pathlib import Path
+import time
 from typing import Any, Sequence
 from uuid import uuid4
 
@@ -333,7 +334,17 @@ def run_training(config_path: str) -> Path:
     train_dir = run_dir / "train"
     train_dir.mkdir(parents=True, exist_ok=True)
 
+    compatibility_start = time.perf_counter()
+    print("[timing] phase=compatibility_checks status=start")
     _validate_model_compatibility(config, transformers)
+    compatibility_elapsed_s = time.perf_counter() - compatibility_start
+    print(
+        "[timing] phase=compatibility_checks status=end "
+        f"elapsed_s={compatibility_elapsed_s:.3f}"
+    )
+
+    model_load_start = time.perf_counter()
+    print("[timing] phase=model_load status=start")
 
     tokenizer = transformers.AutoTokenizer.from_pretrained(str(params["tokenizer_name_or_path"]))
     if tokenizer.pad_token is None:
@@ -353,8 +364,9 @@ def run_training(config_path: str) -> Path:
     model_load_kwargs: dict[str, Any] = {
         "torch_dtype": resolved_dtype,
     }
-    cuda_available = bool(torch.cuda.is_available())
-    cuda_device_count = int(torch.cuda.device_count()) if cuda_available else 0
+    torch_cuda = getattr(torch, "cuda", None)
+    cuda_available = bool(torch_cuda and torch_cuda.is_available())
+    cuda_device_count = int(torch_cuda.device_count()) if cuda_available else 0
     quantized_load = bool(params["load_in_4bit"] or params["load_in_8bit"])
     single_gpu_non_quantized = cuda_available and cuda_device_count == 1 and not quantized_load
 
@@ -380,7 +392,14 @@ def run_training(config_path: str) -> Path:
     model = peft.get_peft_model(model, lora_config)
     if single_gpu_non_quantized:
         model = model.to("cuda")
+    model_load_elapsed_s = time.perf_counter() - model_load_start
+    print(
+        "[timing] phase=model_load status=end "
+        f"elapsed_s={model_load_elapsed_s:.3f}"
+    )
 
+    tokenize_start = time.perf_counter()
+    print("[timing] phase=dataset_load_normalize_tokenize status=start")
     train_dataset, eval_dataset = load_instruction_datasets(config=config, tokenizer=tokenizer)
     padding_strategy = str(config.get("data", {}).get("padding", "max_length")).strip().lower()
     normalized_padding = "dynamic" if padding_strategy in {"dynamic", "longest"} else "max_length"
@@ -397,6 +416,11 @@ def run_training(config_path: str) -> Path:
             max_seq_len=params["max_seq_len"],
             padding=normalized_padding,
         )
+    tokenize_elapsed_s = time.perf_counter() - tokenize_start
+    print(
+        "[timing] phase=dataset_load_normalize_tokenize status=end "
+        f"elapsed_s={tokenize_elapsed_s:.3f}"
+    )
 
     eval_strategy = str(params["eval_strategy"]).lower()
     if eval_dataset is None and eval_strategy != "no":
@@ -446,7 +470,14 @@ def run_training(config_path: str) -> Path:
         f"{_build_model_device_summary(model)}"
     )
 
+    train_start = time.perf_counter()
+    print("[timing] phase=trainer_train status=start")
     train_result = trainer.train()
+    train_elapsed_s = time.perf_counter() - train_start
+    print(
+        "[timing] phase=trainer_train status=end "
+        f"elapsed_s={train_elapsed_s:.3f}"
+    )
     training_metrics = train_result.metrics if train_result and train_result.metrics else {}
 
     adapter_dir = train_dir / "adapter"
@@ -458,6 +489,10 @@ def run_training(config_path: str) -> Path:
         "train_loss": float(training_metrics.get("train_loss", 0.0)),
         "steps": int(training_metrics.get("global_step", 0)),
         "epochs_completed": float(training_metrics.get("epoch", params["epochs"])),
+        "time_compatibility_checks_s": float(compatibility_elapsed_s),
+        "time_model_load_s": float(model_load_elapsed_s),
+        "time_tokenize_s": float(tokenize_elapsed_s),
+        "time_train_s": float(train_elapsed_s),
     }
 
     trainer_state_payload: dict[str, Any] | None = None
