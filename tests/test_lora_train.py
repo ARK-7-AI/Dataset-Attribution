@@ -156,6 +156,7 @@ def patch_training_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
             "train_loss": 0.25,
             "global_step": 2,
             "epoch": 1.0,
+            "train_steps_per_second": 3.0,
         }
 
     class FakeTrainer:
@@ -300,6 +301,10 @@ def test_run_training_writes_expected_artifacts(
     assert metrics["train_loss"] > 0
     assert metrics["steps"] > 0
     assert metrics["epochs_completed"] > 0
+    assert metrics["train_steps_per_second"] > 0
+    assert metrics["padding_strategy"] in {"dynamic", "max_length"}
+    assert metrics["padding_benchmark"]["benchmark_target"] == "max_length_baseline"
+    assert metrics["padding_benchmark"]["observed_steps_per_second"] > 0
 
     assert params["lora_rank"] == 4
     assert params["lora_alpha"] == 8.0

@@ -341,6 +341,61 @@ def _persist_run_outputs(
     return train_dir
 
 
+def _extract_sequence_lengths(dataset: Any) -> list[int]:
+    """Extract per-example sequence lengths from a tokenized dataset."""
+    lengths: list[int] = []
+    if hasattr(dataset, "rows") and isinstance(getattr(dataset, "rows"), list):
+        dataset_rows = getattr(dataset, "rows")
+    else:
+        dataset_rows = dataset
+
+    for row in dataset_rows:
+        attention_mask = row.get("attention_mask")
+        if isinstance(attention_mask, list) and attention_mask:
+            lengths.append(int(sum(int(token) for token in attention_mask)))
+            continue
+
+        input_ids = row.get("input_ids")
+        if isinstance(input_ids, list):
+            lengths.append(len(input_ids))
+            continue
+
+        raise ValueError("Tokenized dataset rows must include either list attention_mask or list input_ids")
+    return lengths
+
+
+def _estimate_max_length_baseline_steps_per_second(
+    *,
+    sequence_lengths: list[int],
+    batch_size: int,
+    max_seq_len: int,
+    observed_steps_per_second: float,
+) -> dict[str, float]:
+    """Estimate max_length padding baseline from observed throughput and token padding footprint."""
+    if not sequence_lengths or batch_size <= 0 or max_seq_len <= 0:
+        return {"estimated_baseline_steps_per_second": 0.0, "padding_token_ratio_vs_max_length": 0.0}
+
+    dynamic_tokens = 0
+    max_length_tokens = 0
+    for start in range(0, len(sequence_lengths), batch_size):
+        batch = sequence_lengths[start : start + batch_size]
+        if not batch:
+            continue
+        dynamic_batch_max = min(max(batch), max_seq_len)
+        dynamic_tokens += dynamic_batch_max * len(batch)
+        max_length_tokens += max_seq_len * len(batch)
+
+    if max_length_tokens <= 0:
+        return {"estimated_baseline_steps_per_second": 0.0, "padding_token_ratio_vs_max_length": 0.0}
+
+    token_ratio = float(dynamic_tokens / max_length_tokens)
+    estimated_baseline = float(observed_steps_per_second * token_ratio)
+    return {
+        "estimated_baseline_steps_per_second": estimated_baseline,
+        "padding_token_ratio_vs_max_length": token_ratio,
+    }
+
+
 def run_training(config_path: str) -> Path:
     """Run LoRA training flow and return the train artifact directory."""
     transformers = importlib.import_module("transformers")
@@ -535,15 +590,40 @@ def run_training(config_path: str) -> Path:
     model.save_pretrained(adapter_dir)
     tokenizer.save_pretrained(train_dir / "tokenizer")
 
+    observed_steps_per_second = float(training_metrics.get("train_steps_per_second", 0.0))
+    sequence_lengths = _extract_sequence_lengths(train_dataset)
+    baseline_benchmark = _estimate_max_length_baseline_steps_per_second(
+        sequence_lengths=sequence_lengths,
+        batch_size=int(params["batch_size"]),
+        max_seq_len=int(params["max_seq_len"]),
+        observed_steps_per_second=observed_steps_per_second,
+    )
+    estimated_baseline_steps_per_second = float(baseline_benchmark["estimated_baseline_steps_per_second"])
+    if estimated_baseline_steps_per_second > 0:
+        estimated_speedup_pct = float(
+            ((observed_steps_per_second - estimated_baseline_steps_per_second) / estimated_baseline_steps_per_second) * 100.0
+        )
+    else:
+        estimated_speedup_pct = 0.0
+
     metrics = {
         "train_runtime": float(training_metrics.get("train_runtime", 0.0)),
         "train_loss": float(training_metrics.get("train_loss", 0.0)),
         "steps": int(training_metrics.get("global_step", 0)),
+        "train_steps_per_second": observed_steps_per_second,
         "epochs_completed": float(training_metrics.get("epoch", params["epochs"])),
         "time_compatibility_checks_s": float(compatibility_elapsed_s),
         "time_model_load_s": float(model_load_elapsed_s),
         "time_tokenize_s": float(tokenize_elapsed_s),
         "time_train_s": float(train_elapsed_s),
+        "padding_strategy": normalized_padding,
+        "padding_benchmark": {
+            "benchmark_target": "max_length_baseline",
+            "observed_steps_per_second": observed_steps_per_second,
+            "estimated_max_length_steps_per_second": estimated_baseline_steps_per_second,
+            "estimated_speedup_pct_vs_max_length": estimated_speedup_pct,
+            "padding_token_ratio_vs_max_length": float(baseline_benchmark["padding_token_ratio_vs_max_length"]),
+        },
     }
 
     trainer_state_payload: dict[str, Any] | None = None
