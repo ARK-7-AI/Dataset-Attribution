@@ -1,0 +1,70 @@
+# Colab LoRA profile
+#
+# Usage:
+#   python -m src.training.lora_train --config configs/profiles/colab_train_lora.yaml
+#
+# This profile intentionally avoids `device_map: auto` for training on a single Colab GPU.
+# The training loader will keep the model fully on CUDA unless quantization/offload is
+# explicitly enabled.
+
+experiment_name: colab_lora
+
+# Base model/tokenizer
+model_name_or_path: Qwen/Qwen2.5-3B-Instruct
+tokenizer_name_or_path: null
+
+# Run output routing
+output_root: outputs/runs
+run_id: colab_run
+auto_run_id: false
+
+# LoRA adapter settings
+lora:
+  rank: 8
+  alpha: 16
+  dropout: 0.05
+  target_modules: null
+  bias: none
+
+# Dataset wiring
+data:
+  dataset_json_path: data/raw/alpaca_data.json
+  train_manifest_path: outputs/runs/default_run/splits/train.csv
+  test_manifest_path: outputs/runs/default_run/splits/test.csv
+  shadow_manifest_path: outputs/runs/default_run/splits/shadow.csv
+
+  text_fields: [text, instruction]
+  prompt_field: prompt
+  input_field: input
+  response_field: response
+  response_fallback_fields: [output, answer, completion]
+  normalize_response_key: true
+
+training:
+  batch_size: 2
+  learning_rate: 0.0002
+  epochs: 3
+  gradient_accumulation_steps: 2
+  max_steps: null
+  warmup_ratio: 0.03
+  weight_decay: 0.01
+  lr_scheduler_type: cosine
+
+  fp16: false
+  bf16: true
+
+  max_seq_len: 512
+  logging_steps: 10
+  save_steps: 100
+  eval_steps: 100
+  eval_strategy: steps
+
+# Keep quantization disabled by default for full-CUDA single-GPU training.
+load_in_4bit: false
+load_in_8bit: false
+
+# Avoid device_map:auto in this profile.
+# Leave null to allow training logic to omit device_map in single-GPU mode.
+device_map: null
+
+seed: 42

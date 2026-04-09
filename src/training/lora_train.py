@@ -250,6 +250,46 @@ def _build_model_device_summary(model: Any) -> str:
     )
 
 
+def _explicit_offload_requested(device_map: Any) -> bool:
+    """Return True when device_map explicitly requests non-CUDA placement/offload."""
+    if device_map is None:
+        return False
+
+    if isinstance(device_map, str):
+        normalized = device_map.strip().lower()
+        if not normalized or normalized == "auto":
+            return False
+        if normalized.startswith("cuda"):
+            return False
+        return True
+
+    if isinstance(device_map, dict):
+        mapped_devices = {str(target).strip().lower() for target in device_map.values()}
+        if not mapped_devices:
+            return False
+        return any(not target.startswith("cuda") for target in mapped_devices)
+
+    return True
+
+
+def _resolve_model_loading_strategy(
+    *,
+    cuda_available: bool,
+    cuda_device_count: int,
+    quantized_load: bool,
+    device_map: Any,
+) -> dict[str, Any]:
+    """Resolve model-loading placement strategy from runtime and config state."""
+    explicit_offload = _explicit_offload_requested(device_map)
+    single_gpu_training = cuda_available and cuda_device_count == 1
+    use_single_gpu_cuda_placement = single_gpu_training and not quantized_load and not explicit_offload
+    return {
+        "explicit_offload": explicit_offload,
+        "single_gpu_training": single_gpu_training,
+        "use_single_gpu_cuda_placement": use_single_gpu_cuda_placement,
+    }
+
+
 def _build_trainer_kwargs(
     transformers: Any,
     *,
@@ -368,9 +408,17 @@ def run_training(config_path: str) -> Path:
     cuda_available = bool(torch_cuda and torch_cuda.is_available())
     cuda_device_count = int(torch_cuda.device_count()) if cuda_available else 0
     quantized_load = bool(params["load_in_4bit"] or params["load_in_8bit"])
-    single_gpu_non_quantized = cuda_available and cuda_device_count == 1 and not quantized_load
+    placement_strategy = _resolve_model_loading_strategy(
+        cuda_available=cuda_available,
+        cuda_device_count=cuda_device_count,
+        quantized_load=quantized_load,
+        device_map=params["device_map"],
+    )
+    explicit_offload = bool(placement_strategy["explicit_offload"])
+    single_gpu_training = bool(placement_strategy["single_gpu_training"])
+    use_single_gpu_cuda_placement = bool(placement_strategy["use_single_gpu_cuda_placement"])
 
-    if not single_gpu_non_quantized:
+    if not use_single_gpu_cuda_placement:
         model_load_kwargs["device_map"] = params["device_map"]
     if params["load_in_4bit"]:
         model_load_kwargs["load_in_4bit"] = True
@@ -390,7 +438,7 @@ def run_training(config_path: str) -> Path:
         target_modules=params["lora_target_modules"],
     )
     model = peft.get_peft_model(model, lora_config)
-    if single_gpu_non_quantized:
+    if use_single_gpu_cuda_placement:
         model = model.to("cuda")
     model_load_elapsed_s = time.perf_counter() - model_load_start
     print(
@@ -465,8 +513,11 @@ def run_training(config_path: str) -> Path:
         "[startup] model_device_summary "
         f"cuda_available={cuda_available} "
         f"cuda_device_count={cuda_device_count} "
-        f"single_gpu_non_quantized={single_gpu_non_quantized} "
+        f"single_gpu_training={single_gpu_training} "
         f"quantized_load={quantized_load} "
+        f"explicit_offload={explicit_offload} "
+        f"use_single_gpu_cuda_placement={use_single_gpu_cuda_placement} "
+        f"resolved_device_map={model_load_kwargs.get('device_map', '<omitted>')} "
         f"{_build_model_device_summary(model)}"
     )
 
