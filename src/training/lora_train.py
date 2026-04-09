@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from argparse import ArgumentParser, Namespace
+from collections.abc import Mapping
 from datetime import datetime, timezone
 import importlib
 import inspect
@@ -356,10 +357,12 @@ def preflight_validate_batch_collation(
             "Check dataset schema vs collator pathway compatibility."
         ) from exc
 
-    if not isinstance(batch, dict):
+    if not isinstance(batch, Mapping):
         raise ValueError(
-            f"Preflight collation returned unexpected type {type(batch).__name__}; expected dict"
+            "Preflight collation returned unexpected type "
+            f"{type(batch).__name__}; expected Mapping (e.g., dict or BatchEncoding)"
         )
+    batch = dict(batch)
 
     for key in ("input_ids", "attention_mask", "labels"):
         if key not in batch:

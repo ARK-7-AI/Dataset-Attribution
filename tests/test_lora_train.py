@@ -498,3 +498,91 @@ def test_preflight_validate_batch_collation_detects_missing_labels() -> None:
             batch_size=1,
             split_name="train",
         )
+
+
+def test_preflight_validate_batch_collation_accepts_mapping_batch_encoding_like() -> None:
+    class FakeTorch:
+        long = "long"
+
+        @staticmethod
+        def tensor(value: object, dtype: object | None = None) -> object:
+            return {"value": value, "dtype": dtype}
+
+    class FakeBatchEncoding(dict):
+        """Minimal BatchEncoding-like mapping."""
+
+    class MappingCollator:
+        def __call__(self, features: list[dict[str, list[int]]]) -> FakeBatchEncoding:
+            return FakeBatchEncoding(
+                {
+                    "input_ids": [feature["input_ids"] for feature in features],
+                    "attention_mask": [feature["attention_mask"] for feature in features],
+                    "labels": [feature["input_ids"] for feature in features],
+                }
+            )
+
+    class FakeDataset:
+        rows = [{"input_ids": [1, 2], "attention_mask": [1, 1]}]
+
+    lora_train.preflight_validate_batch_collation(
+        dataset=FakeDataset(),
+        data_collator=MappingCollator(),
+        torch_mod=FakeTorch,
+        batch_size=1,
+        split_name="train",
+    )
+
+
+def test_preflight_validate_batch_collation_accepts_plain_dict() -> None:
+    class FakeTorch:
+        long = "long"
+
+        @staticmethod
+        def tensor(value: object, dtype: object | None = None) -> object:
+            return {"value": value, "dtype": dtype}
+
+    class DictCollator:
+        def __call__(self, features: list[dict[str, list[int]]]) -> dict[str, list[list[int]]]:
+            return {
+                "input_ids": [feature["input_ids"] for feature in features],
+                "attention_mask": [feature["attention_mask"] for feature in features],
+                "labels": [feature["input_ids"] for feature in features],
+            }
+
+    class FakeDataset:
+        rows = [{"input_ids": [1], "attention_mask": [1]}]
+
+    lora_train.preflight_validate_batch_collation(
+        dataset=FakeDataset(),
+        data_collator=DictCollator(),
+        torch_mod=FakeTorch,
+        batch_size=1,
+        split_name="train",
+    )
+
+
+def test_preflight_validate_batch_collation_rejects_non_mapping() -> None:
+    class FakeTorch:
+        long = "long"
+
+        @staticmethod
+        def tensor(value: object, dtype: object | None = None) -> object:
+            return {"value": value, "dtype": dtype}
+
+    class NonMappingCollator:
+        def __call__(self, features: list[dict[str, list[int]]]) -> list[dict[str, list[int]]]:
+            return features
+
+    class FakeDataset:
+        rows = [{"input_ids": [1], "attention_mask": [1]}]
+
+    with pytest.raises(
+        ValueError, match=r"expected Mapping \(e\.g\., dict or BatchEncoding\)"
+    ):
+        lora_train.preflight_validate_batch_collation(
+            dataset=FakeDataset(),
+            data_collator=NonMappingCollator(),
+            torch_mod=FakeTorch,
+            batch_size=1,
+            split_name="train",
+        )
