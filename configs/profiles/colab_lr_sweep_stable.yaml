@@ -1,0 +1,38 @@
+# Stable Colab LR sweep profile (quick comparison)
+#
+# Purpose:
+#   Compare learning-rate candidates under identical random seed and training budget.
+#
+# Usage:
+#   1) Pick a variant from `variants` below.
+#   2) Copy the selected variant values into configs/profiles/colab_train_lora.yaml
+#      (or another runnable train config), then run training.
+#
+# Recommended starting point:
+#   lr_2e4 (2e-4). Only move higher if metrics show clear, repeatable improvement.
+
+profile_name: colab_lr_sweep_stable
+base_profile: configs/profiles/colab_train_lora.yaml
+
+stability_controls:
+  seed: 42
+  max_steps: 120
+
+variants:
+  - name: lr_2e4
+    learning_rate: 0.0002
+    seed: 42
+    max_steps: 120
+    note: Default candidate for Colab quick comparisons.
+
+  - name: lr_1e4
+    learning_rate: 0.0001
+    seed: 42
+    max_steps: 120
+    note: More conservative update size.
+
+  - name: lr_5e_5
+    learning_rate: 0.00005
+    seed: 42
+    max_steps: 120
+    note: Lowest-step-size stability check.
