@@ -375,3 +375,38 @@ def test_model_compatibility_guard_rejects_non_causal_architecture() -> None:
 
     with pytest.raises(ValueError, match="decoder-only causal LM"):
         lora_train._validate_model_compatibility(config, FakeTransformers)
+
+
+def test_explicit_offload_requested_detection() -> None:
+    assert lora_train._explicit_offload_requested(None) is False
+    assert lora_train._explicit_offload_requested("auto") is False
+    assert lora_train._explicit_offload_requested("cuda:0") is False
+    assert lora_train._explicit_offload_requested("cpu") is True
+    assert lora_train._explicit_offload_requested({"": "cuda:0"}) is False
+    assert lora_train._explicit_offload_requested({"": "cpu"}) is True
+
+
+def test_resolve_model_loading_strategy_prefers_single_gpu_cuda_without_offload() -> None:
+    strategy = lora_train._resolve_model_loading_strategy(
+        cuda_available=True,
+        cuda_device_count=1,
+        quantized_load=False,
+        device_map="auto",
+    )
+
+    assert strategy["single_gpu_training"] is True
+    assert strategy["explicit_offload"] is False
+    assert strategy["use_single_gpu_cuda_placement"] is True
+
+
+def test_resolve_model_loading_strategy_respects_explicit_offload() -> None:
+    strategy = lora_train._resolve_model_loading_strategy(
+        cuda_available=True,
+        cuda_device_count=1,
+        quantized_load=False,
+        device_map="cpu",
+    )
+
+    assert strategy["single_gpu_training"] is True
+    assert strategy["explicit_offload"] is True
+    assert strategy["use_single_gpu_cuda_placement"] is False
