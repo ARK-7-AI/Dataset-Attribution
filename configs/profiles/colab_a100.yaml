@@ -1,0 +1,66 @@
+# Colab A100 throughput profile
+#
+# Usage:
+#   python -m src.training.lora_train --config configs/profiles/colab_a100.yaml
+#
+# Goals:
+# - Explicit single-device placement to avoid unintended auto-offload behavior.
+# - Dynamic padding for better token efficiency.
+# - Throughput-oriented checkpoint/eval cadence for short profile runs.
+
+experiment_name: colab_a100_lora
+profile: colab_a100
+
+model_name_or_path: Qwen/Qwen2.5-3B-Instruct
+tokenizer_name_or_path: null
+
+output_root: outputs/runs
+run_id: colab_a100_run
+auto_run_id: false
+
+lora:
+  rank: 8
+  alpha: 16
+  dropout: 0.05
+  target_modules: null
+  bias: none
+
+data:
+  dataset_json_path: data/raw/alpaca_data.json
+  train_manifest_path: outputs/runs/default_run/splits/train.csv
+  test_manifest_path: outputs/runs/default_run/splits/test.csv
+  shadow_manifest_path: outputs/runs/default_run/splits/shadow.csv
+
+  text_fields: [text, instruction]
+  prompt_field: prompt
+  input_field: input
+  response_field: response
+  response_fallback_fields: [output, answer, completion]
+  normalize_response_key: true
+  padding: dynamic
+
+training:
+  batch_size: 4
+  learning_rate: 0.0002
+  epochs: 1
+  max_steps: 120
+  gradient_accumulation_steps: 1
+  warmup_ratio: 0.03
+  weight_decay: 0.01
+  lr_scheduler_type: cosine
+
+  fp16: false
+  bf16: true
+
+  max_seq_len: 512
+  logging_steps: 10
+  save_steps: 120
+  eval_steps: 120
+  eval_strategy: steps
+
+load_in_4bit: false
+load_in_8bit: false
+
+# Explicit single-device placement for A100 profile.
+device_map: cuda:0
+seed: 42

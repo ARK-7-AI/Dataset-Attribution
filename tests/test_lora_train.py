@@ -321,6 +321,9 @@ def test_run_training_writes_expected_artifacts(
     assert metrics["steps"] > 0
     assert metrics["epochs_completed"] > 0
     assert metrics["train_steps_per_second"] > 0
+    assert metrics["train_tokens_per_second"] > 0
+    assert metrics["throughput"]["steps_per_second"] > 0
+    assert metrics["throughput"]["tokens_per_second"] > 0
     assert metrics["padding_strategy"] in {"dynamic", "max_length"}
     assert metrics["padding_benchmark"]["benchmark_target"] == "max_length_baseline"
     assert metrics["padding_benchmark"]["observed_steps_per_second"] > 0
@@ -389,10 +392,15 @@ def test_lora_training_outputs_are_gradient_logger_compatible(
 def test_training_profiles_use_ungated_model_id() -> None:
     dev_config = yaml.safe_load(Path("configs/train_lora.dev.yaml").read_text(encoding="utf-8"))
     final_config = yaml.safe_load(Path("configs/train_lora.final.yaml").read_text(encoding="utf-8"))
+    a100_config = yaml.safe_load(Path("configs/profiles/colab_a100.yaml").read_text(encoding="utf-8"))
     assert dev_config["model_name_or_path"] == "Qwen/Qwen2.5-3B-Instruct"
     assert final_config["model_name_or_path"] == "Qwen/Qwen2.5-3B-Instruct"
+    assert a100_config["model_name_or_path"] == "Qwen/Qwen2.5-3B-Instruct"
     assert dev_config["profile"] == "dev"
     assert final_config["profile"] == "final"
+    assert a100_config["profile"] == "colab_a100"
+    assert a100_config["device_map"] == "cuda:0"
+    assert a100_config["data"]["padding"] == "dynamic"
 
 
 def test_final_report_guard_rejects_non_final_profile() -> None:
