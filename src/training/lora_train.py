@@ -443,6 +443,15 @@ def _resolve_model_loading_strategy(
     }
 
 
+def _resolve_effective_mixed_precision_mode(*, fp16: bool, bf16: bool) -> str:
+    """Resolve effective mixed-precision mode from config flags."""
+    if bf16:
+        return "bf16"
+    if fp16:
+        return "fp16"
+    return "fp32"
+
+
 def _build_trainer_kwargs(
     transformers: Any,
     *,
@@ -600,6 +609,30 @@ def _estimate_max_length_baseline_steps_per_second(
         "estimated_baseline_steps_per_second": estimated_baseline,
         "padding_token_ratio_vs_max_length": token_ratio,
     }
+
+
+def _estimate_train_tokens_per_second(
+    *,
+    sequence_lengths: list[int],
+    steps_completed: int,
+    batch_size: int,
+    gradient_accumulation_steps: int,
+    train_runtime_s: float,
+) -> float:
+    """Estimate token throughput using average effective sequence length."""
+    if (
+        not sequence_lengths
+        or steps_completed <= 0
+        or batch_size <= 0
+        or gradient_accumulation_steps <= 0
+        or train_runtime_s <= 0
+    ):
+        return 0.0
+
+    avg_seq_len = float(sum(sequence_lengths) / len(sequence_lengths))
+    examples_per_optimizer_step = int(batch_size * gradient_accumulation_steps)
+    estimated_tokens = float(avg_seq_len * examples_per_optimizer_step * steps_completed)
+    return float(estimated_tokens / train_runtime_s)
 
 
 def run_training(config_path: str, *, enforce_final_report: bool = False) -> Path:
@@ -793,6 +826,9 @@ def run_training(config_path: str, *, enforce_final_report: bool = False) -> Pat
             data_collator=data_collator,
         )
     )
+    effective_mixed_precision = _resolve_effective_mixed_precision_mode(
+        fp16=bool(params["fp16"]), bf16=bool(params["bf16"])
+    )
     print(
         "[startup] model_device_summary "
         f"cuda_available={cuda_available} "
@@ -803,6 +839,12 @@ def run_training(config_path: str, *, enforce_final_report: bool = False) -> Pat
         f"use_single_gpu_cuda_placement={use_single_gpu_cuda_placement} "
         f"resolved_device_map={model_load_kwargs.get('device_map', '<omitted>')} "
         f"{_build_model_device_summary(model)}"
+    )
+    print(
+        "[startup] runtime_diagnostics "
+        f"resolved_device_placement={'cuda:0' if use_single_gpu_cuda_placement else model_load_kwargs.get('device_map', params['device_map'])} "
+        f"gpu_available={cuda_available} "
+        f"effective_mixed_precision={effective_mixed_precision}"
     )
 
     train_start = time.perf_counter()
@@ -821,7 +863,16 @@ def run_training(config_path: str, *, enforce_final_report: bool = False) -> Pat
     tokenizer.save_pretrained(train_dir / "tokenizer")
 
     observed_steps_per_second = float(training_metrics.get("train_steps_per_second", 0.0))
+    train_runtime_s = float(training_metrics.get("train_runtime", 0.0))
+    steps_completed = int(training_metrics.get("global_step", 0))
     sequence_lengths = _extract_sequence_lengths(train_dataset)
+    observed_tokens_per_second = _estimate_train_tokens_per_second(
+        sequence_lengths=sequence_lengths,
+        steps_completed=steps_completed,
+        batch_size=int(params["batch_size"]),
+        gradient_accumulation_steps=int(params["gradient_accumulation_steps"]),
+        train_runtime_s=train_runtime_s,
+    )
     baseline_benchmark = _estimate_max_length_baseline_steps_per_second(
         sequence_lengths=sequence_lengths,
         batch_size=int(params["batch_size"]),
@@ -839,8 +890,13 @@ def run_training(config_path: str, *, enforce_final_report: bool = False) -> Pat
     metrics = {
         "train_runtime": float(training_metrics.get("train_runtime", 0.0)),
         "train_loss": float(training_metrics.get("train_loss", 0.0)),
-        "steps": int(training_metrics.get("global_step", 0)),
+        "steps": steps_completed,
         "train_steps_per_second": observed_steps_per_second,
+        "train_tokens_per_second": observed_tokens_per_second,
+        "throughput": {
+            "steps_per_second": observed_steps_per_second,
+            "tokens_per_second": observed_tokens_per_second,
+        },
         "epochs_completed": float(training_metrics.get("epoch", params["epochs"])),
         "time_config_path_validation_s": float(config_validation_elapsed_s),
         "time_model_tokenizer_load_s": float(model_load_elapsed_s),
