@@ -15,6 +15,8 @@ auto_run_id: false
 reporting:
   # Final reports must reference runs launched from this profile with --final-report.
   is_final_report_run: true
+  # Enforce clean checkout by default. Set to capture_diff to save repo_state.diff.txt instead.
+  final_repo_state_policy: fail_dirty
 
 # LoRA adapter settings
 lora:

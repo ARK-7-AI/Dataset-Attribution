@@ -478,6 +478,90 @@ def test_final_report_guard_rejects_non_final_profile() -> None:
         )
 
 
+def test_final_report_guard_rejects_unknown_repo_state_policy() -> None:
+    with pytest.raises(ValueError, match="final_repo_state_policy"):
+        lora_train._validate_training_config(
+            {
+                "profile": "final",
+                "model_name_or_path": "fake",
+                "output_root": "outputs/runs",
+                "run_id": "run",
+                "reporting": {
+                    "is_final_report_run": True,
+                    "final_repo_state_policy": "unknown",
+                },
+                "data": {
+                    "dataset_json_path": "data/raw/alpaca_data.json",
+                    "train_manifest_path": "outputs/runs/default_run/splits/train.csv",
+                    "test_manifest_path": "outputs/runs/default_run/splits/test.csv",
+                    "shadow_manifest_path": "outputs/runs/default_run/splits/shadow.csv",
+                    "text_fields": ["prompt", "response"],
+                    "prompt_field": "prompt",
+                    "response_field": "response",
+                },
+                "training": {
+                    "gradient_accumulation_steps": 1,
+                    "warmup_ratio": 0.0,
+                    "weight_decay": 0.0,
+                    "lr_scheduler_type": "linear",
+                    "logging_steps": 1,
+                    "save_steps": 1,
+                    "eval_strategy": "no",
+                    "fp16": True,
+                },
+            },
+            config_path="configs/train_lora.final.yaml",
+        )
+
+
+def test_run_training_final_report_fails_on_dirty_repo_by_default(
+    tiny_dataset_and_config: tuple[Path, Path, Path],
+    patch_training_runtime: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, _, config_path = tiny_dataset_and_config
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["profile"] = "final"
+    config["reporting"] = {"is_final_report_run": True}
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    monkeypatch.setattr(
+        lora_train,
+        "_resolve_git_metadata",
+        lambda: {"git_commit_hash": "abc123", "git_dirty": True},
+    )
+    with pytest.raises(ValueError, match="repository is dirty"):
+        run_training(str(config_path))
+
+
+def test_run_training_final_report_capture_diff_allows_dirty_repo(
+    tiny_dataset_and_config: tuple[Path, Path, Path],
+    patch_training_runtime: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, _, config_path = tiny_dataset_and_config
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["profile"] = "final"
+    config["reporting"] = {
+        "is_final_report_run": True,
+        "final_repo_state_policy": "capture_diff",
+    }
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    monkeypatch.setattr(
+        lora_train,
+        "_resolve_git_metadata",
+        lambda: {"git_commit_hash": "abc123", "git_dirty": True},
+    )
+    monkeypatch.setattr(
+        lora_train,
+        "_capture_repo_diff_artifact",
+        lambda train_dir: str(train_dir / "repo_state.diff.txt"),
+    )
+    run_dir = run_training(str(config_path))
+    params = json.loads((run_dir / "params.json").read_text(encoding="utf-8"))
+    assert params["reproducibility"]["final_report_repo_state_policy"] == "capture_diff"
+    assert params["reproducibility"]["repo_state_diff_artifact"].endswith("repo_state.diff.txt")
+
+
 def test_model_compatibility_guard_rejects_non_causal_architecture() -> None:
     class FakeTokenizer:
         @staticmethod
