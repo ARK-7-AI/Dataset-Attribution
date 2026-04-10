@@ -37,6 +37,11 @@ def build_parser() -> ArgumentParser:
     """Build CLI parser for the LoRA training entrypoint."""
     parser = ArgumentParser(description="LoRA training entrypoint")
     parser.add_argument("--config", required=True, help="Path to training config YAML")
+    parser.add_argument(
+        "--final-report",
+        action="store_true",
+        help="Require report-grade safeguards; rejects dev profile configs.",
+    )
     return parser
 
 
@@ -61,7 +66,9 @@ def _load_config(config_path: str) -> dict[str, Any]:
 
 
 
-def _validate_training_config(config: dict[str, Any]) -> None:
+def _validate_training_config(
+    config: dict[str, Any], *, config_path: str | None = None, enforce_final_report: bool = False
+) -> None:
     """Validate required training config fields and fail fast on unsafe defaults."""
 
     def _require_non_empty(root: dict[str, Any], key: str, *, label: str | None = None) -> Any:
@@ -145,6 +152,27 @@ def _validate_training_config(config: dict[str, Any]) -> None:
     eval_strategy = str(train_cfg.get("eval_strategy", "")).lower()
     if eval_strategy not in {"no", "steps", "epoch"}:
         raise ValueError("'training.eval_strategy' must be one of: no, steps, epoch")
+
+    reporting_cfg = config.get("reporting", {})
+    if reporting_cfg is not None and not isinstance(reporting_cfg, dict):
+        raise ValueError("'reporting' must be a mapping when provided")
+    reporting_cfg = reporting_cfg if isinstance(reporting_cfg, dict) else {}
+
+    profile = str(config.get("profile", "")).strip().lower()
+    is_final_report_run = bool(reporting_cfg.get("is_final_report_run", False))
+    final_report_requested = bool(enforce_final_report or is_final_report_run)
+    if final_report_requested:
+        if profile != "final":
+            raise ValueError(
+                "Final reporting requires 'profile: final'. "
+                "Use configs/train_lora.final.yaml for report-grade runs."
+            )
+        config_filename = Path(str(config_path or "")).name.lower()
+        if ".dev." in config_filename:
+            raise ValueError(
+                "Dev profile config cannot be used for final reporting. "
+                "Use configs/train_lora.final.yaml."
+            )
 
 
 def _build_run_id() -> str:
@@ -574,7 +602,7 @@ def _estimate_max_length_baseline_steps_per_second(
     }
 
 
-def run_training(config_path: str) -> Path:
+def run_training(config_path: str, *, enforce_final_report: bool = False) -> Path:
     """Run LoRA training flow and return the train artifact directory."""
     transformers = importlib.import_module("transformers")
     peft = importlib.import_module("peft")
@@ -593,7 +621,7 @@ def run_training(config_path: str) -> Path:
     print("[timing] phase=config_path_validation status=start")
     config = _load_config(config_path)
     config["config_path"] = str(config_path)
-    _validate_training_config(config)
+    _validate_training_config(config, config_path=config_path, enforce_final_report=enforce_final_report)
     params = _get_config_params(config)
     deterministic_settings = _set_global_determinism(int(params["seed"]), torch)
     run_id = str(params["run_id"] or _build_run_id())
@@ -866,7 +894,7 @@ def run_training(config_path: str) -> Path:
 def main(argv: Sequence[str] | None = None) -> None:
     """Run LoRA training workflow."""
     args = parse_args(argv)
-    run_dir = run_training(args.config)
+    run_dir = run_training(args.config, enforce_final_report=bool(args.final_report))
     print(f"LoRA training finished. Outputs written to: {run_dir}")
 
 

@@ -1,0 +1,72 @@
+# LoRA training configuration (dev smoke profile)
+profile: dev
+experiment_name: baseline_lora_dev
+
+# Base model/tokenizer
+model_name_or_path: Qwen/Qwen2.5-3B-Instruct
+tokenizer_name_or_path: null # optional override (defaults to model_name_or_path)
+
+# Run output routing
+output_root: outputs/runs
+run_id: dev_smoke_run
+auto_run_id: false
+
+# Reporting guardrails
+reporting:
+  # Set true (or pass --final-report) only for report-grade runs.
+  is_final_report_run: false
+
+# LoRA adapter settings
+lora:
+  rank: 8
+  alpha: 16
+  dropout: 0.05
+  target_modules: null
+  bias: none
+
+# Dataset wiring
+data:
+  dataset_json_path: data/raw/alpaca_data.json
+  train_manifest_path: outputs/runs/default_run/splits/train.csv
+  test_manifest_path: outputs/runs/default_run/splits/test.csv
+  shadow_manifest_path: outputs/runs/default_run/splits/shadow.csv
+
+  # Field mapping used to build supervised examples
+  text_fields: [text, instruction]
+  prompt_field: prompt
+  input_field: input
+  response_field: response
+  response_fallback_fields: [output, answer, completion]
+  normalize_response_key: true
+  padding: dynamic
+
+training:
+  # Fast smoke checks: low steps, low cost
+  batch_size: 2
+  learning_rate: 0.0002
+  epochs: 3
+  gradient_accumulation_steps: 2
+  max_steps: 120
+  warmup_ratio: 0.03
+  weight_decay: 0.01
+  lr_scheduler_type: cosine
+
+  # Exactly one precision mode should be enabled
+  fp16: false
+  bf16: true
+
+  max_seq_len: 512
+  logging_steps: 10
+  save_steps: 120
+  eval_steps: 60
+  eval_strategy: steps # one of: no, steps, epoch
+
+# Memory profile presets:
+# - Balanced (default): bf16 + micro-batch 2 + grad accumulation 2
+# - Lower VRAM: set fp16=true, bf16=false, batch_size=1, gradient_accumulation_steps>=4
+# - Minimum VRAM (optional): enable exactly one of load_in_4bit/load_in_8bit
+load_in_4bit: false
+load_in_8bit: false
+
+seed: 42
+device_map: auto
