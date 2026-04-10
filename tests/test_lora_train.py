@@ -330,11 +330,23 @@ def test_run_training_writes_expected_artifacts(
     assert metrics["time_config_path_validation_s"] >= 0
     assert metrics["time_model_tokenizer_load_s"] >= 0
     assert metrics["time_dataset_load_tokenization_s"] >= 0
+    assert metrics["time_trainer_initialization_s"] >= 0
     assert metrics["time_trainer_train_loop_s"] >= 0
+    assert metrics["time_config_preflight_s"] >= 0
+    assert metrics["time_model_load_s"] >= 0
+    assert metrics["time_data_prep_s"] >= 0
+    assert metrics["time_trainer_init_s"] >= 0
+    assert metrics["time_train_s"] >= 0
     assert metrics["timing_breakdown_s"]["config_path_validation"] >= 0
+    assert metrics["timing_breakdown_s"]["config_preflight"] >= 0
     assert metrics["timing_breakdown_s"]["model_tokenizer_load"] >= 0
+    assert metrics["timing_breakdown_s"]["model_load"] >= 0
     assert metrics["timing_breakdown_s"]["dataset_load_tokenization"] >= 0
+    assert metrics["timing_breakdown_s"]["data_prep"] >= 0
+    assert metrics["timing_breakdown_s"]["trainer_initialization"] >= 0
+    assert metrics["timing_breakdown_s"]["trainer_init"] >= 0
     assert metrics["timing_breakdown_s"]["trainer_train_loop"] >= 0
+    assert metrics["timing_breakdown_s"]["train"] >= 0
 
     assert params["lora_rank"] == 4
     assert params["lora_alpha"] == 8.0
