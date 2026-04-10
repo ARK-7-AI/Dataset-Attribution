@@ -634,6 +634,60 @@ def _estimate_train_tokens_per_second(
     return float(estimated_tokens / train_runtime_s)
 
 
+def _count_tokens_in_batch(batch: Any) -> int:
+    """Count non-padding tokens in a collated batch payload."""
+    if not isinstance(batch, Mapping):
+        return 0
+
+    attention_mask = batch.get("attention_mask")
+    if isinstance(attention_mask, list):
+        return int(sum(int(token) for row in attention_mask for token in row))
+
+    input_ids = batch.get("input_ids")
+    if isinstance(input_ids, list):
+        return int(sum(len(row) for row in input_ids))
+
+    return 0
+
+
+class _TokenCountingDataCollator:
+    """Wrap a collator and accumulate measured token counts across micro-batches."""
+
+    def __init__(self, *, base_collator: Any) -> None:
+        self._base_collator = base_collator
+        self.total_tokens = 0
+        self.microbatches = 0
+
+    def __call__(self, features: list[dict[str, Any]]) -> Any:
+        batch = self._base_collator(features)
+        self.total_tokens += _count_tokens_in_batch(batch)
+        self.microbatches += 1
+        return batch
+
+
+def _resolve_train_tokens_per_second(
+    *,
+    training_metrics: Mapping[str, Any],
+    measured_total_tokens: int,
+    train_runtime_s: float,
+    estimated_tokens_per_second: float,
+) -> float:
+    """Resolve train token throughput preferring measured totals when available."""
+    if measured_total_tokens > 0 and train_runtime_s > 0:
+        return float(measured_total_tokens / train_runtime_s)
+
+    metric_tokens_per_second = training_metrics.get("train_tokens_per_second")
+    if metric_tokens_per_second is not None:
+        try:
+            metric_value = float(metric_tokens_per_second)
+        except (TypeError, ValueError):
+            metric_value = 0.0
+        if metric_value > 0:
+            return metric_value
+
+    return float(max(0.0, estimated_tokens_per_second))
+
+
 def _resolve_steps_completed(
     *,
     training_metrics: Mapping[str, Any],
@@ -837,7 +891,8 @@ def run_training(config_path: str, *, enforce_final_report: bool = False) -> Pat
         dataloader_num_workers=0,
     )
 
-    data_collator = transformers.DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+    base_collator = transformers.DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+    data_collator = _TokenCountingDataCollator(base_collator=base_collator)
 
     preflight_validate_batch_collation(
         dataset=train_dataset,
@@ -916,6 +971,13 @@ def run_training(config_path: str, *, enforce_final_report: bool = False) -> Pat
         gradient_accumulation_steps=int(params["gradient_accumulation_steps"]),
         train_runtime_s=train_runtime_s,
     )
+    measured_total_tokens = int(data_collator.total_tokens)
+    resolved_tokens_per_second = _resolve_train_tokens_per_second(
+        training_metrics=training_metrics,
+        measured_total_tokens=measured_total_tokens,
+        train_runtime_s=train_runtime_s,
+        estimated_tokens_per_second=observed_tokens_per_second,
+    )
     baseline_benchmark = _estimate_max_length_baseline_steps_per_second(
         sequence_lengths=sequence_lengths,
         batch_size=int(params["batch_size"]),
@@ -935,11 +997,12 @@ def run_training(config_path: str, *, enforce_final_report: bool = False) -> Pat
         "train_loss": float(training_metrics.get("train_loss", 0.0)),
         "steps": steps_completed,
         "steps_estimated": bool(steps_estimated),
+        "train_tokens_total": measured_total_tokens,
         "train_steps_per_second": observed_steps_per_second,
-        "train_tokens_per_second": observed_tokens_per_second,
+        "train_tokens_per_second": resolved_tokens_per_second,
         "throughput": {
             "steps_per_second": observed_steps_per_second,
-            "tokens_per_second": observed_tokens_per_second,
+            "tokens_per_second": resolved_tokens_per_second,
         },
         "epochs_completed": float(training_metrics.get("epoch", params["epochs"])),
         "time_config_path_validation_s": float(config_validation_elapsed_s),
