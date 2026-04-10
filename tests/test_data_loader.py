@@ -29,6 +29,16 @@ class FakeTokenizer:
         return {"input_ids": values, "attention_mask": [1] * len(values)}
 
 
+class CountingTokenizer(FakeTokenizer):
+    def __init__(self, name_or_path: str = "fake/tokenizer") -> None:
+        self.calls = 0
+        self.name_or_path = name_or_path
+
+    def __call__(self, text: str, **kwargs: object) -> dict[str, list[int]]:
+        self.calls += 1
+        return super().__call__(text, **kwargs)
+
+
 class FakeDataset:
     def __init__(self, rows: list[dict[str, object]]) -> None:
         self.rows = rows
@@ -409,3 +419,85 @@ def test_collator_schema_validator_rejects_wrong_combination() -> None:
             split_name="train",
             collator_path=COLLATOR_PATH_PADDING,
         )
+
+
+def test_loader_reuses_cached_tokenized_rows_when_inputs_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset_path = tmp_path / "dataset.json"
+    dataset_path.write_text(
+        json.dumps(
+            [
+                {"sample_id": "s1", "prompt": "one two three", "response": "ok"},
+                {"sample_id": "s2", "prompt": "four five six", "response": "done"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    splits_dir = tmp_path / "runs" / "run-a" / "splits"
+    splits_dir.mkdir(parents=True, exist_ok=True)
+    (splits_dir / "train.csv").write_text("sample_id\ns1\ns2\n", encoding="utf-8")
+
+    config = {
+        "run_id": "run-a",
+        "output_root": str(tmp_path / "runs"),
+        "data": {
+            "path": str(dataset_path),
+            "train_manifest_path": str(splits_dir / "train.csv"),
+            "text_fields": ["prompt", "response"],
+            "prompt_field": "prompt",
+            "response_field": "response",
+            "padding": "max_length",
+            "cache_dir": str(tmp_path / "cache"),
+        },
+        "training": {"max_seq_len": 8},
+    }
+    monkeypatch.setattr("src.training.data_loader.importlib.import_module", lambda _: FakeDatasetsModule)
+    tokenizer = CountingTokenizer()
+
+    first_train_dataset, _ = load_instruction_datasets(config=config, tokenizer=tokenizer)
+    first_call_count = tokenizer.calls
+    second_train_dataset, _ = load_instruction_datasets(config=config, tokenizer=tokenizer)
+
+    assert first_call_count > 0
+    assert tokenizer.calls == first_call_count
+    assert first_train_dataset.rows == second_train_dataset.rows
+
+
+def test_loader_rebuilds_cache_when_max_seq_len_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset_path = tmp_path / "dataset.json"
+    dataset_path.write_text(
+        json.dumps([{"sample_id": "s1", "prompt": "one two three four five six", "response": "ok"}]),
+        encoding="utf-8",
+    )
+    splits_dir = tmp_path / "runs" / "run-a" / "splits"
+    splits_dir.mkdir(parents=True, exist_ok=True)
+    (splits_dir / "train.csv").write_text("sample_id\ns1\n", encoding="utf-8")
+
+    base_config = {
+        "run_id": "run-a",
+        "output_root": str(tmp_path / "runs"),
+        "data": {
+            "path": str(dataset_path),
+            "train_manifest_path": str(splits_dir / "train.csv"),
+            "text_fields": ["prompt", "response"],
+            "prompt_field": "prompt",
+            "response_field": "response",
+            "padding": "max_length",
+            "cache_dir": str(tmp_path / "cache"),
+        },
+    }
+    config_a = {**base_config, "training": {"max_seq_len": 4}}
+    config_b = {**base_config, "training": {"max_seq_len": 6}}
+    monkeypatch.setattr("src.training.data_loader.importlib.import_module", lambda _: FakeDatasetsModule)
+    tokenizer = CountingTokenizer()
+
+    train_a, _ = load_instruction_datasets(config=config_a, tokenizer=tokenizer)
+    calls_after_a = tokenizer.calls
+    train_b, _ = load_instruction_datasets(config=config_b, tokenizer=tokenizer)
+
+    assert tokenizer.calls > calls_after_a
+    assert len(train_a.rows[0]["input_ids"]) == 4
+    assert len(train_b.rows[0]["input_ids"]) == 6

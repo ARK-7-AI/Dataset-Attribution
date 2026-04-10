@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import difflib
+import hashlib
 import importlib
 import json
 from pathlib import Path
@@ -125,6 +126,51 @@ def _read_dataset_records(dataset_path: Path, *, dataset_name: str) -> list[dict
 
     return normalize_records(list(rows), dataset_name=dataset_name)
 
+
+def _hash_file(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def _hash_json_payload(payload: Any) -> str:
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _resolve_tokenizer_model_id(config: dict[str, Any], tokenizer: Any) -> str:
+    explicit = config.get("tokenizer_name_or_path") or config.get("model_name_or_path") or config.get("base_model_path")
+    if explicit:
+        return str(explicit)
+    tokenizer_id = getattr(tokenizer, "name_or_path", None)
+    if tokenizer_id:
+        return str(tokenizer_id)
+    return str(tokenizer.__class__.__name__)
+
+
+def _resolve_data_prep_cache_dir(config: dict[str, Any]) -> Path | None:
+    data_cfg = config.get("data", {})
+    explicit = data_cfg.get("cache_dir") or data_cfg.get("data_prep_cache_dir")
+    if explicit:
+        return Path(str(explicit))
+    output_root = config.get("output_root")
+    run_id = config.get("run_id")
+    if output_root and run_id:
+        return Path(str(output_root)) / str(run_id) / "cache" / "data_prep"
+    return None
+
+
+def _read_json_cache(path: Path) -> Any | None:
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _write_json_cache(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
 def _persist_normalized_snapshot(records: list[dict[str, Any]], output_path: Path) -> None:
@@ -365,9 +411,28 @@ def load_instruction_datasets(config: dict[str, Any], tokenizer: Any) -> tuple[A
         raise ValueError("data.padding must be one of: max_length, dynamic, longest")
 
     max_seq_len = int(train_cfg.get("max_seq_len", 512))
+    tokenizer_model_id = _resolve_tokenizer_model_id(config=config, tokenizer=tokenizer)
+    cache_root = _resolve_data_prep_cache_dir(config=config)
 
     dataset_name = str(data_cfg.get("dataset_name") or dataset_path.stem).strip()
-    records = _read_dataset_records(dataset_path, dataset_name=dataset_name)
+    dataset_file_hash = _hash_file(dataset_path)
+    train_manifest_hash = _hash_file(train_manifest_path)
+    test_manifest_hash = _hash_file(eval_manifest_path) if eval_manifest_path else "none"
+
+    records: list[dict[str, Any]]
+    normalized_records_cache_hit = False
+    if cache_root:
+        normalized_key = _hash_json_payload({"dataset_file_hash": dataset_file_hash, "dataset_name": dataset_name})
+        normalized_cache_path = cache_root / "normalized" / f"{normalized_key}.json"
+        cached_records = _read_json_cache(normalized_cache_path)
+        if isinstance(cached_records, list):
+            records = cached_records
+            normalized_records_cache_hit = True
+        else:
+            records = _read_dataset_records(dataset_path, dataset_name=dataset_name)
+            _write_json_cache(normalized_cache_path, records)
+    else:
+        records = _read_dataset_records(dataset_path, dataset_name=dataset_name)
     if normalize_response_key:
         for record in records:
             response = str(record.get(response_field) or "").strip()
@@ -414,12 +479,49 @@ def load_instruction_datasets(config: dict[str, Any], tokenizer: Any) -> tuple[A
 
     datasets_mod = importlib.import_module("datasets")
 
-    train_rows = _tokenize_examples(
-        train_examples,
-        tokenizer=tokenizer,
-        max_seq_len=max_seq_len,
-        padding=tokenization_padding,
-    )
+    tokenization_cache_context = {
+        "dataset_file_hash": dataset_file_hash,
+        "tokenizer_model_id": tokenizer_model_id,
+        "max_seq_len": max_seq_len,
+        "padding_mode": tokenization_padding,
+        "text_fields": text_fields,
+        "prompt_field": prompt_field,
+        "input_field": input_field,
+        "response_field": response_field,
+        "response_fallback_fields": response_fallback_fields,
+        "normalize_response_key": normalize_response_key,
+    }
+
+    train_rows: list[dict[str, Any]]
+    train_cache_hit = False
+    if cache_root:
+        train_key = _hash_json_payload(
+            {
+                **tokenization_cache_context,
+                "split_name": "train",
+                "split_manifest_hash": train_manifest_hash,
+            }
+        )
+        train_cache_path = cache_root / "tokenized" / f"{train_key}.json"
+        cached_train_rows = _read_json_cache(train_cache_path)
+        if isinstance(cached_train_rows, list):
+            train_rows = cached_train_rows
+            train_cache_hit = True
+        else:
+            train_rows = _tokenize_examples(
+                train_examples,
+                tokenizer=tokenizer,
+                max_seq_len=max_seq_len,
+                padding=tokenization_padding,
+            )
+            _write_json_cache(train_cache_path, train_rows)
+    else:
+        train_rows = _tokenize_examples(
+            train_examples,
+            tokenizer=tokenizer,
+            max_seq_len=max_seq_len,
+            padding=tokenization_padding,
+        )
     _validate_model_tensor_fields(
         train_rows,
         max_seq_len=max_seq_len,
@@ -431,12 +533,33 @@ def load_instruction_datasets(config: dict[str, Any], tokenizer: Any) -> tuple[A
     train_dataset = datasets_mod.Dataset.from_list(train_rows)
     eval_dataset = None
     if test_examples:
-        eval_rows = _tokenize_examples(
-            test_examples,
-            tokenizer=tokenizer,
-            max_seq_len=max_seq_len,
-            padding=tokenization_padding,
-        )
+        if cache_root:
+            eval_key = _hash_json_payload(
+                {
+                    **tokenization_cache_context,
+                    "split_name": "eval",
+                    "split_manifest_hash": test_manifest_hash,
+                }
+            )
+            eval_cache_path = cache_root / "tokenized" / f"{eval_key}.json"
+            cached_eval_rows = _read_json_cache(eval_cache_path)
+            if isinstance(cached_eval_rows, list):
+                eval_rows = cached_eval_rows
+            else:
+                eval_rows = _tokenize_examples(
+                    test_examples,
+                    tokenizer=tokenizer,
+                    max_seq_len=max_seq_len,
+                    padding=tokenization_padding,
+                )
+                _write_json_cache(eval_cache_path, eval_rows)
+        else:
+            eval_rows = _tokenize_examples(
+                test_examples,
+                tokenizer=tokenizer,
+                max_seq_len=max_seq_len,
+                padding=tokenization_padding,
+            )
         _validate_model_tensor_fields(
             eval_rows,
             max_seq_len=max_seq_len,
@@ -445,6 +568,13 @@ def load_instruction_datasets(config: dict[str, Any], tokenizer: Any) -> tuple[A
             require_labels=False,
         )
         eval_dataset = datasets_mod.Dataset.from_list(eval_rows)
+
+    if cache_root:
+        print(
+            "[data-prep-cache] "
+            f"normalized_hit={normalized_records_cache_hit} train_hit={train_cache_hit} "
+            f"tokenizer_model_id={tokenizer_model_id} max_seq_len={max_seq_len} padding={tokenization_padding}"
+        )
 
     return train_dataset, eval_dataset
 
