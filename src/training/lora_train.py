@@ -172,6 +172,14 @@ def _validate_training_config(
                 "Dev profile config cannot be used for final reporting. "
                 "Use configs/train_lora.final.yaml."
             )
+        final_repo_state_policy = str(
+            reporting_cfg.get("final_repo_state_policy", "fail_dirty")
+        ).strip().lower()
+        if final_repo_state_policy not in {"fail_dirty", "capture_diff"}:
+            raise ValueError(
+                "Invalid reporting.final_repo_state_policy. "
+                "Expected one of: fail_dirty, capture_diff."
+            )
 
 
 def _build_run_id() -> str:
@@ -310,14 +318,45 @@ def _resolve_git_metadata() -> dict[str, Any]:
         return {"git_commit_hash": "unknown", "git_dirty": None}
 
     try:
-        subprocess.check_call(["git", "diff", "--quiet"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        dirty = False
-    except subprocess.CalledProcessError:
-        dirty = True
+        status_output = subprocess.check_output(
+            ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        dirty = bool(status_output.strip())
     except Exception:
         dirty = None
 
     return {"git_commit_hash": commit_hash, "git_dirty": dirty}
+
+
+def _capture_repo_diff_artifact(train_dir: Path) -> str | None:
+    """Persist a full repository state artifact (status + patch diff)."""
+    try:
+        status_output = subprocess.check_output(
+            ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        diff_output = subprocess.check_output(
+            ["git", "diff", "--binary", "--no-color", "HEAD"],
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    except Exception:
+        return None
+
+    artifact_path = train_dir / "repo_state.diff.txt"
+    payload = [
+        "# git status --porcelain=v1 --untracked-files=all",
+        status_output.rstrip(),
+        "",
+        "# git diff --binary --no-color HEAD",
+        diff_output.rstrip(),
+        "",
+    ]
+    artifact_path.write_text("\n".join(payload), encoding="utf-8")
+    return str(artifact_path)
 
 
 def _set_global_determinism(seed: int, torch: Any) -> dict[str, Any]:
@@ -738,6 +777,12 @@ def run_training(config_path: str, *, enforce_final_report: bool = False) -> Pat
     _validate_training_config(config, config_path=config_path, enforce_final_report=enforce_final_report)
     params = _get_config_params(config)
     deterministic_settings = _set_global_determinism(int(params["seed"]), torch)
+    reporting_cfg = config.get("reporting", {}) if isinstance(config.get("reporting", {}), dict) else {}
+    final_report_requested = bool(enforce_final_report or reporting_cfg.get("is_final_report_run", False))
+    final_repo_state_policy = str(
+        reporting_cfg.get("final_repo_state_policy", "fail_dirty")
+    ).strip().lower()
+    git_metadata = _resolve_git_metadata()
     run_id = str(params["run_id"] or _build_run_id())
     params["run_id"] = run_id
     config["run_id"] = run_id
@@ -758,6 +803,15 @@ def run_training(config_path: str, *, enforce_final_report: bool = False) -> Pat
     run_dir = Path(str(params["output_dir"])) / run_id
     train_dir = run_dir / "train"
     train_dir.mkdir(parents=True, exist_ok=True)
+    repo_diff_artifact_path: str | None = None
+    if final_report_requested:
+        if git_metadata.get("git_dirty") is True and final_repo_state_policy == "fail_dirty":
+            raise ValueError(
+                "Final report run aborted because repository is dirty. "
+                "Commit/stash changes or set reporting.final_repo_state_policy: capture_diff."
+            )
+        if final_repo_state_policy == "capture_diff":
+            repo_diff_artifact_path = _capture_repo_diff_artifact(train_dir)
 
     model_load_start = time.perf_counter()
     print("[timing] phase=model_tokenizer_load status=start")
@@ -1035,8 +1089,11 @@ def run_training(config_path: str, *, enforce_final_report: bool = False) -> Pat
         },
         "cuda": _detect_cuda_environment(torch),
         "determinism": deterministic_settings,
-        "git": _resolve_git_metadata(),
+        "git": git_metadata,
     }
+    if final_report_requested:
+        reproducibility["final_report_repo_state_policy"] = final_repo_state_policy
+        reproducibility["repo_state_diff_artifact"] = repo_diff_artifact_path
     params["reproducibility"] = reproducibility
     config["reproducibility"] = reproducibility
 

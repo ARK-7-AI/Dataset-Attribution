@@ -128,6 +128,15 @@ Final report-grade profile (required for report references):
 python -m src.training.lora_train --config configs/train_lora.final.yaml --final-report
 ```
 
+Final report runs enforce repository traceability policy:
+
+- Default (`reporting.final_repo_state_policy: fail_dirty`): abort the run if the git checkout is dirty.
+- Optional (`reporting.final_repo_state_policy: capture_diff`): allow dirty checkout, but persist
+  `outputs/runs/<run_id>/train/repo_state.diff.txt` containing full `git status` + `git diff HEAD`.
+
+This guarantees that every report-grade run is either pinned to a clean commit or carries a
+replayable checkout diff artifact for auditability.
+
 Equivalent wrapper script:
 
 ```bash
@@ -153,6 +162,7 @@ Each training run now persists reproducibility metadata under `outputs/runs/<run
 - CUDA runtime details (availability, device count, device names, CUDA version reported by torch).
 - Deterministic controls and seed state (`PYTHONHASHSEED`, NumPy/Torch seeding flags, cuDNN deterministic/benchmark mode).
 - Git checkout metadata (`git_commit_hash`, `git_dirty`).
+- For final report runs: selected repo-state policy and optional `repo_state.diff.txt` artifact path.
 
 Training enforces deterministic defaults by:
 
