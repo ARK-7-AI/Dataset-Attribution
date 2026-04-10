@@ -634,6 +634,34 @@ def _estimate_train_tokens_per_second(
     return float(estimated_tokens / train_runtime_s)
 
 
+def _resolve_steps_completed(
+    *,
+    training_metrics: Mapping[str, Any],
+    trainer_state: Any,
+) -> tuple[int, bool]:
+    """Resolve completed optimizer steps with robust fallback behavior."""
+    trainer_state_global_step = getattr(trainer_state, "global_step", None)
+    if trainer_state_global_step is not None:
+        steps = int(trainer_state_global_step)
+        if steps > 0:
+            return steps, False
+
+    metrics_global_step = training_metrics.get("global_step", 0)
+    try:
+        steps = int(metrics_global_step)
+    except (TypeError, ValueError):
+        steps = 0
+    if steps > 0:
+        return steps, False
+
+    runtime_s = float(training_metrics.get("train_runtime", 0.0))
+    steps_per_second = float(training_metrics.get("train_steps_per_second", 0.0))
+    estimated_steps = int(round(runtime_s * steps_per_second))
+    if estimated_steps > 0:
+        return estimated_steps, True
+    return 0, True
+
+
 def run_training(config_path: str, *, enforce_final_report: bool = False) -> Path:
     """Run LoRA training flow and return the train artifact directory."""
     transformers = importlib.import_module("transformers")
@@ -876,7 +904,10 @@ def run_training(config_path: str, *, enforce_final_report: bool = False) -> Pat
 
     observed_steps_per_second = float(training_metrics.get("train_steps_per_second", 0.0))
     train_runtime_s = float(training_metrics.get("train_runtime", 0.0))
-    steps_completed = int(training_metrics.get("global_step", 0))
+    steps_completed, steps_estimated = _resolve_steps_completed(
+        training_metrics=training_metrics,
+        trainer_state=getattr(trainer, "state", None),
+    )
     sequence_lengths = _extract_sequence_lengths(train_dataset)
     observed_tokens_per_second = _estimate_train_tokens_per_second(
         sequence_lengths=sequence_lengths,
@@ -903,6 +934,7 @@ def run_training(config_path: str, *, enforce_final_report: bool = False) -> Pat
         "train_runtime": float(training_metrics.get("train_runtime", 0.0)),
         "train_loss": float(training_metrics.get("train_loss", 0.0)),
         "steps": steps_completed,
+        "steps_estimated": bool(steps_estimated),
         "train_steps_per_second": observed_steps_per_second,
         "train_tokens_per_second": observed_tokens_per_second,
         "throughput": {

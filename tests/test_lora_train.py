@@ -297,6 +297,25 @@ def test_build_trainer_kwargs_omits_processing_class_when_not_supported() -> Non
     assert "tokenizer" not in kwargs
 
 
+def test_resolve_steps_completed_prefers_trainer_state_global_step() -> None:
+    trainer_state = type("State", (), {"global_step": 7})()
+    steps, estimated = lora_train._resolve_steps_completed(
+        training_metrics={"train_runtime": 4.0, "train_steps_per_second": 2.0},
+        trainer_state=trainer_state,
+    )
+    assert steps == 7
+    assert estimated is False
+
+
+def test_resolve_steps_completed_estimates_when_global_step_missing() -> None:
+    steps, estimated = lora_train._resolve_steps_completed(
+        training_metrics={"train_runtime": 1.6, "train_steps_per_second": 2.0},
+        trainer_state=type("State", (), {})(),
+    )
+    assert steps > 0
+    assert estimated is True
+
+
 def test_run_training_writes_expected_artifacts(
     tiny_dataset_and_config: tuple[Path, Path, Path],
     patch_training_runtime: None,
