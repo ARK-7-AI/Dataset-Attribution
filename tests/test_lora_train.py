@@ -316,6 +316,16 @@ def test_resolve_steps_completed_estimates_when_global_step_missing() -> None:
     assert estimated is True
 
 
+def test_resolve_train_tokens_per_second_falls_back_to_estimate_when_framework_metric_missing() -> None:
+    resolved = lora_train._resolve_train_tokens_per_second(
+        training_metrics={"train_steps_per_second": 4.0},
+        measured_total_tokens=0,
+        train_runtime_s=2.0,
+        estimated_tokens_per_second=123.0,
+    )
+    assert resolved == pytest.approx(123.0)
+
+
 def test_run_training_writes_expected_artifacts(
     tiny_dataset_and_config: tuple[Path, Path, Path],
     patch_training_runtime: None,
@@ -339,6 +349,7 @@ def test_run_training_writes_expected_artifacts(
     assert metrics["train_loss"] > 0
     assert metrics["steps"] > 0
     assert metrics["epochs_completed"] > 0
+    assert metrics["train_tokens_total"] > 0
     assert metrics["train_steps_per_second"] > 0
     assert metrics["train_tokens_per_second"] > 0
     assert metrics["throughput"]["steps_per_second"] > 0
