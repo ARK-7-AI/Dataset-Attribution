@@ -95,6 +95,8 @@ Run data splitting **before** training so manifests exist at `outputs/runs/<run_
 - Use `configs/data.yaml` for the bundled sample dataset, or `configs/data_3000_template.yaml` when running the 3000-row architecture (2400/300/300).
 2. Training stage (second): load either `configs/train_lora.dev.yaml` (smoke) or `configs/train_lora.final.yaml` (report), resolve `<run_id>` inside manifest paths, and train against the generated split manifests.
 
+3. Artifact validation (automatic final step): `src.training.lora_train` now runs output validation and fails fast if required train artifacts/schema are incomplete. You can also run it manually with `python scripts/validate_train_outputs.py --train-dir outputs/runs/<run_id>/train`.
+
 
 ## Baseline model selection (ungated)
 
