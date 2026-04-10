@@ -8,7 +8,10 @@ from datetime import datetime, timezone
 import importlib
 import inspect
 import json
+import os
 from pathlib import Path
+import random
+import subprocess
 import time
 from typing import Any, Sequence
 from uuid import uuid4
@@ -237,6 +240,119 @@ def _validate_model_compatibility(config: dict[str, Any], transformers: Any) -> 
 def _resolve_package_version(module: Any) -> str:
     """Return package version string when available."""
     return str(getattr(module, "__version__", "unknown"))
+
+
+def _detect_cuda_environment(torch: Any) -> dict[str, Any]:
+    """Capture runtime CUDA/GPU environment details for reproducibility metadata."""
+    cuda_module = getattr(torch, "cuda", None)
+    cuda_available = bool(cuda_module and cuda_module.is_available())
+    if not cuda_available:
+        return {
+            "cuda_available": False,
+            "cuda_device_count": 0,
+            "cuda_devices": [],
+            "torch_cuda_version": str(getattr(getattr(torch, "version", object()), "cuda", "unknown")),
+        }
+
+    cuda_device_count = int(cuda_module.device_count())
+    cuda_devices: list[dict[str, Any]] = []
+    for index in range(cuda_device_count):
+        try:
+            device_name = str(cuda_module.get_device_name(index))
+        except Exception:
+            device_name = "unknown"
+        cuda_devices.append({"index": index, "name": device_name})
+
+    return {
+        "cuda_available": True,
+        "cuda_device_count": cuda_device_count,
+        "cuda_devices": cuda_devices,
+        "torch_cuda_version": str(getattr(getattr(torch, "version", object()), "cuda", "unknown")),
+    }
+
+
+def _resolve_git_metadata() -> dict[str, Any]:
+    """Resolve git commit and dirty-state metadata for the current checkout."""
+    try:
+        commit_hash = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            stderr=subprocess.STDOUT,
+            text=True,
+        ).strip()
+    except Exception:
+        return {"git_commit_hash": "unknown", "git_dirty": None}
+
+    try:
+        subprocess.check_call(["git", "diff", "--quiet"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        dirty = False
+    except subprocess.CalledProcessError:
+        dirty = True
+    except Exception:
+        dirty = None
+
+    return {"git_commit_hash": commit_hash, "git_dirty": dirty}
+
+
+def _set_global_determinism(seed: int, torch: Any) -> dict[str, Any]:
+    """Apply deterministic RNG settings across Python, NumPy, and Torch when available."""
+    random.seed(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
+
+    numpy_seeded = False
+    try:
+        numpy = importlib.import_module("numpy")
+        numpy.random.seed(seed)
+        numpy_seeded = True
+    except Exception:
+        numpy_seeded = False
+
+    torch_seeded = False
+    cuda_seeded = False
+    deterministic_algorithms = False
+    cudnn_deterministic = None
+    cudnn_benchmark = None
+
+    if hasattr(torch, "manual_seed"):
+        torch.manual_seed(seed)
+        torch_seeded = True
+
+    torch_cuda = getattr(torch, "cuda", None)
+    if torch_cuda and torch_cuda.is_available() and hasattr(torch_cuda, "manual_seed_all"):
+        torch_cuda.manual_seed_all(seed)
+        cuda_seeded = True
+
+    if hasattr(torch, "use_deterministic_algorithms"):
+        try:
+            torch.use_deterministic_algorithms(True, warn_only=True)
+            deterministic_algorithms = True
+        except TypeError:
+            torch.use_deterministic_algorithms(True)
+            deterministic_algorithms = True
+        except Exception:
+            deterministic_algorithms = False
+
+    cudnn_module = getattr(getattr(torch, "backends", None), "cudnn", None)
+    if cudnn_module is not None:
+        if hasattr(cudnn_module, "deterministic"):
+            cudnn_module.deterministic = True
+            cudnn_deterministic = bool(cudnn_module.deterministic)
+        if hasattr(cudnn_module, "benchmark"):
+            cudnn_module.benchmark = False
+            cudnn_benchmark = bool(cudnn_module.benchmark)
+
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+
+    return {
+        "seed": int(seed),
+        "pythonhashseed": os.environ.get("PYTHONHASHSEED"),
+        "numpy_seeded": numpy_seeded,
+        "torch_seeded": torch_seeded,
+        "cuda_seeded": cuda_seeded,
+        "torch_deterministic_algorithms": deterministic_algorithms,
+        "torch_cudnn_deterministic": cudnn_deterministic,
+        "torch_cudnn_benchmark": cudnn_benchmark,
+        "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG"),
+    }
 
 
 def _build_model_device_summary(model: Any) -> str:
@@ -479,6 +595,7 @@ def run_training(config_path: str) -> Path:
     config["config_path"] = str(config_path)
     _validate_training_config(config)
     params = _get_config_params(config)
+    deterministic_settings = _set_global_determinism(int(params["seed"]), torch)
     run_id = str(params["run_id"] or _build_run_id())
     params["run_id"] = run_id
     config["run_id"] = run_id
@@ -620,9 +737,11 @@ def run_training(config_path: str) -> Path:
         fp16=params["fp16"],
         bf16=params["bf16"],
         seed=params["seed"],
+        data_seed=params["seed"],
         report_to=[],
         remove_unused_columns=False,
         disable_tqdm=False,
+        dataloader_num_workers=0,
     )
 
     data_collator = transformers.DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
@@ -709,6 +828,20 @@ def run_training(config_path: str) -> Path:
             "padding_token_ratio_vs_max_length": float(baseline_benchmark["padding_token_ratio_vs_max_length"]),
         },
     }
+    reproducibility = {
+        "python_version": f"{os.sys.version_info.major}.{os.sys.version_info.minor}.{os.sys.version_info.micro}",
+        "package_versions": {
+            "transformers": _resolve_package_version(transformers),
+            "peft": _resolve_package_version(peft),
+            "accelerate": _resolve_package_version(accelerate),
+            "torch": _resolve_package_version(torch),
+        },
+        "cuda": _detect_cuda_environment(torch),
+        "determinism": deterministic_settings,
+        "git": _resolve_git_metadata(),
+    }
+    params["reproducibility"] = reproducibility
+    config["reproducibility"] = reproducibility
 
     trainer_state_payload: dict[str, Any] | None = None
     trainer_state = getattr(trainer, "state", None)

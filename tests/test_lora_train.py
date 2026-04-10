@@ -336,6 +336,13 @@ def test_run_training_writes_expected_artifacts(
     assert params["lora_alpha"] == 8.0
     assert params["lora_dropout"] == 0.1
     assert params["lora_bias"] == "none"
+    assert params["reproducibility"]["python_version"]
+    assert params["reproducibility"]["package_versions"]["transformers"] == "4.47.0"
+    assert params["reproducibility"]["package_versions"]["peft"] == "0.13.0"
+    assert params["reproducibility"]["package_versions"]["accelerate"] == "1.1.0"
+    assert params["reproducibility"]["cuda"]["cuda_available"] is False
+    assert params["reproducibility"]["git"]["git_commit_hash"]
+    assert "reproducibility" in yaml.safe_load((run_dir / "resolved_config.yaml").read_text(encoding="utf-8"))
 
 
 def test_lora_training_outputs_are_gradient_logger_compatible(

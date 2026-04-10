@@ -126,6 +126,38 @@ To reduce breakage from upstream API shifts in Hugging Face Trainer, this projec
 
 These ranges are validated with the LoRA training pipeline and regression tests in `tests/test_lora_train.py`. At startup, `src.training.lora_train` logs the effective runtime versions for `transformers`, `accelerate`, and `peft` to make debugging easier.
 
+## Reproducibility layer
+
+Each training run now persists reproducibility metadata under `outputs/runs/<run_id>/train/params.json` (and mirrors it in `resolved_config.yaml`) in a `reproducibility` block:
+
+- Python version used to execute training.
+- Library versions: `transformers`, `peft`, `accelerate`, and `torch`.
+- CUDA runtime details (availability, device count, device names, CUDA version reported by torch).
+- Deterministic controls and seed state (`PYTHONHASHSEED`, NumPy/Torch seeding flags, cuDNN deterministic/benchmark mode).
+- Git checkout metadata (`git_commit_hash`, `git_dirty`).
+
+Training enforces deterministic defaults by:
+
+- Applying a single seed to Python, NumPy (if installed), and Torch/CUDA.
+- Enabling deterministic Torch algorithms when available.
+- Forcing `dataloader_num_workers=0` and setting both `seed` and `data_seed` in `TrainingArguments`.
+- Setting `CUBLAS_WORKSPACE_CONFIG` when absent.
+
+### Verify reproducibility across reruns
+
+Use the verification script to run a short profile twice and compare artifact schema + training deltas:
+
+```bash
+bash scripts/verify_reproducibility.sh configs/profiles/colab_train_lora.yaml
+```
+
+What it checks:
+
+- Required artifact presence in both runs (`params.json`, `metrics.json`, `trainer_state.json`, `resolved_config.yaml`, adapter/tokenizer outputs).
+- Stable `params.json` schema across reruns.
+- Near-identical metrics (`steps` equal, low `train_loss` drift, bounded throughput drift).
+- SHA256 hash comparison for key artifacts to quickly spot differences.
+
 ## Expected output artifacts and where to find `run_id`
 
 After training finishes, artifacts are written under:
