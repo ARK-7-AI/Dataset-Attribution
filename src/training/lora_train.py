@@ -25,8 +25,7 @@ from src.training.data_loader import (
     validate_dataset_schema_for_collator,
     validate_trainer_dataset,
 )
-
-
+from src.training.validate_outputs import validate_training_outputs
 
 
 # Standardized collation pathway: dataset rows must not include labels;
@@ -963,6 +962,7 @@ def run_training(config_path: str, *, enforce_final_report: bool = False) -> Pat
         config=config,
         trainer_state=trainer_state_payload,
     )
+    validate_training_outputs(train_dir)
     return train_dir
 
 

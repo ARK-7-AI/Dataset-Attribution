@@ -42,6 +42,8 @@ python -m src.training.lora_train --config "${CONFIG_PATH}" ${FINAL_REPORT_FLAG}
 LATEST_RUN_DIR="$(ls -dt outputs/runs/*/train 2>/dev/null | head -n 1 || true)"
 
 if [[ -n "${LATEST_RUN_DIR}" ]]; then
+  echo "Running training artifact validation..."
+  python scripts/validate_train_outputs.py --train-dir "${LATEST_RUN_DIR}"
   echo "Training outputs: ${LATEST_RUN_DIR}"
   echo "Run metadata: ${LATEST_RUN_DIR}/params.json"
   echo "Run metrics: ${LATEST_RUN_DIR}/metrics.json"
