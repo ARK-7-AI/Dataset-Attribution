@@ -668,6 +668,7 @@ def run_training(config_path: str, *, enforce_final_report: bool = False) -> Pat
     preflight_validate_data_paths(config)
     config_validation_elapsed_s = time.perf_counter() - config_validation_start
     timing_breakdown_s["config_path_validation"] = float(config_validation_elapsed_s)
+    timing_breakdown_s["config_preflight"] = float(config_validation_elapsed_s)
     print(
         "[timing] phase=config_path_validation status=end "
         f"elapsed_s={config_validation_elapsed_s:.3f}"
@@ -737,6 +738,7 @@ def run_training(config_path: str, *, enforce_final_report: bool = False) -> Pat
         model = model.to("cuda")
     model_load_elapsed_s = time.perf_counter() - model_load_start
     timing_breakdown_s["model_tokenizer_load"] = float(model_load_elapsed_s)
+    timing_breakdown_s["model_load"] = float(model_load_elapsed_s)
     print(
         "[timing] phase=model_tokenizer_load status=end "
         f"elapsed_s={model_load_elapsed_s:.3f}"
@@ -772,6 +774,7 @@ def run_training(config_path: str, *, enforce_final_report: bool = False) -> Pat
         )
     tokenize_elapsed_s = time.perf_counter() - tokenize_start
     timing_breakdown_s["dataset_load_tokenization"] = float(tokenize_elapsed_s)
+    timing_breakdown_s["data_prep"] = float(tokenize_elapsed_s)
     print(
         "[timing] phase=dataset_load_tokenization status=end "
         f"elapsed_s={tokenize_elapsed_s:.3f}"
@@ -781,6 +784,8 @@ def run_training(config_path: str, *, enforce_final_report: bool = False) -> Pat
     if eval_dataset is None and eval_strategy != "no":
         raise ValueError("Eval strategy requires eval data. Set training.eval_strategy=no or provide eval manifest")
 
+    trainer_init_start = time.perf_counter()
+    print("[timing] phase=trainer_initialization status=start")
     training_args = transformers.TrainingArguments(
         output_dir=str(train_dir / "checkpoints"),
         num_train_epochs=float(params["epochs"]),
@@ -826,6 +831,13 @@ def run_training(config_path: str, *, enforce_final_report: bool = False) -> Pat
             data_collator=data_collator,
         )
     )
+    trainer_init_elapsed_s = time.perf_counter() - trainer_init_start
+    timing_breakdown_s["trainer_initialization"] = float(trainer_init_elapsed_s)
+    timing_breakdown_s["trainer_init"] = float(trainer_init_elapsed_s)
+    print(
+        "[timing] phase=trainer_initialization status=end "
+        f"elapsed_s={trainer_init_elapsed_s:.3f}"
+    )
     effective_mixed_precision = _resolve_effective_mixed_precision_mode(
         fp16=bool(params["fp16"]), bf16=bool(params["bf16"])
     )
@@ -852,6 +864,7 @@ def run_training(config_path: str, *, enforce_final_report: bool = False) -> Pat
     train_result = trainer.train()
     train_elapsed_s = time.perf_counter() - train_start
     timing_breakdown_s["trainer_train_loop"] = float(train_elapsed_s)
+    timing_breakdown_s["train"] = float(train_elapsed_s)
     print(
         "[timing] phase=trainer_train status=end "
         f"elapsed_s={train_elapsed_s:.3f}"
@@ -901,7 +914,13 @@ def run_training(config_path: str, *, enforce_final_report: bool = False) -> Pat
         "time_config_path_validation_s": float(config_validation_elapsed_s),
         "time_model_tokenizer_load_s": float(model_load_elapsed_s),
         "time_dataset_load_tokenization_s": float(tokenize_elapsed_s),
+        "time_trainer_initialization_s": float(trainer_init_elapsed_s),
         "time_trainer_train_loop_s": float(train_elapsed_s),
+        "time_config_preflight_s": float(config_validation_elapsed_s),
+        "time_model_load_s": float(model_load_elapsed_s),
+        "time_data_prep_s": float(tokenize_elapsed_s),
+        "time_trainer_init_s": float(trainer_init_elapsed_s),
+        "time_train_s": float(train_elapsed_s),
         "timing_breakdown_s": timing_breakdown_s,
         "padding_strategy": normalized_padding,
         "padding_benchmark": {
