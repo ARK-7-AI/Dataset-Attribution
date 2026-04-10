@@ -248,8 +248,9 @@ def patch_training_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_parse_args_reads_config_path() -> None:
-    args = parse_args(["--config", "configs/train_lora.yaml"])
-    assert args.config == "configs/train_lora.yaml"
+    args = parse_args(["--config", "configs/train_lora.dev.yaml", "--final-report"])
+    assert args.config == "configs/train_lora.dev.yaml"
+    assert args.final_report is True
 
 
 def test_build_trainer_kwargs_uses_processing_class_when_supported() -> None:
@@ -385,9 +386,46 @@ def test_lora_training_outputs_are_gradient_logger_compatible(
     assert metadata["parameter_names"]
 
 
-def test_default_train_config_uses_ungated_model_id() -> None:
-    config = yaml.safe_load(Path("configs/train_lora.yaml").read_text(encoding="utf-8"))
-    assert config["model_name_or_path"] == "Qwen/Qwen2.5-3B-Instruct"
+def test_training_profiles_use_ungated_model_id() -> None:
+    dev_config = yaml.safe_load(Path("configs/train_lora.dev.yaml").read_text(encoding="utf-8"))
+    final_config = yaml.safe_load(Path("configs/train_lora.final.yaml").read_text(encoding="utf-8"))
+    assert dev_config["model_name_or_path"] == "Qwen/Qwen2.5-3B-Instruct"
+    assert final_config["model_name_or_path"] == "Qwen/Qwen2.5-3B-Instruct"
+    assert dev_config["profile"] == "dev"
+    assert final_config["profile"] == "final"
+
+
+def test_final_report_guard_rejects_non_final_profile() -> None:
+    with pytest.raises(ValueError, match="profile: final"):
+        lora_train._validate_training_config(
+            {
+                "profile": "dev",
+                "model_name_or_path": "fake",
+                "output_root": "outputs/runs",
+                "run_id": "run",
+                "data": {
+                    "dataset_json_path": "data/raw/alpaca_data.json",
+                    "train_manifest_path": "outputs/runs/default_run/splits/train.csv",
+                    "test_manifest_path": "outputs/runs/default_run/splits/test.csv",
+                    "shadow_manifest_path": "outputs/runs/default_run/splits/shadow.csv",
+                    "text_fields": ["prompt", "response"],
+                    "prompt_field": "prompt",
+                    "response_field": "response",
+                },
+                "training": {
+                    "gradient_accumulation_steps": 1,
+                    "warmup_ratio": 0.0,
+                    "weight_decay": 0.0,
+                    "lr_scheduler_type": "linear",
+                    "logging_steps": 1,
+                    "save_steps": 1,
+                    "eval_strategy": "no",
+                    "fp16": True,
+                },
+            },
+            config_path="configs/train_lora.dev.yaml",
+            enforce_final_report=True,
+        )
 
 
 def test_model_compatibility_guard_rejects_non_causal_architecture() -> None:

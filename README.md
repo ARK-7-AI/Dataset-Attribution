@@ -30,7 +30,7 @@ Examples:
 Use Python module execution for all runnable jobs:
 
 ```bash
-python -m src.training.lora_train --config configs/train_lora.yaml
+python -m src.training.lora_train --config configs/train_lora.dev.yaml
 ```
 
 This keeps execution consistent across local runs, CI, and future script wrappers.
@@ -58,7 +58,10 @@ Optional: set `data.normalized_snapshot_path` (for example `data/processed/alpac
 
 ### Training ingestion schema mapping (including Alpaca)
 
-The LoRA training loader supports configurable field mapping under `data` in `configs/train_lora.yaml`:
+The LoRA training loader supports configurable field mapping under `data` in the training profiles:
+
+- `configs/train_lora.dev.yaml`
+- `configs/train_lora.final.yaml`
 
 - `prompt_field` (required): primary instruction/prompt key.
 - `input_field` (optional): additional context key (for Alpaca's `input`), appended into prompt text when present.
@@ -90,7 +93,7 @@ Run data splitting **before** training so manifests exist at `outputs/runs/<run_
 
 - `dataset.subset_size` must be less than or equal to the source dataset row count; otherwise split generation fails fast with a clear error.
 - Use `configs/data.yaml` for the bundled sample dataset, or `configs/data_3000_template.yaml` when running the 3000-row architecture (2400/300/300).
-2. Training stage (second): load `configs/train_lora.yaml`, resolve `<run_id>` inside manifest paths, and train against the generated split manifests.
+2. Training stage (second): load either `configs/train_lora.dev.yaml` (smoke) or `configs/train_lora.final.yaml` (report), resolve `<run_id>` inside manifest paths, and train against the generated split manifests.
 
 
 ## Baseline model selection (ungated)
@@ -109,13 +112,26 @@ For ~3B class instruct models with LoRA adapters:
 
 If memory is constrained, reduce `training.batch_size`, raise `training.gradient_accumulation_steps`, and consider `load_in_8bit`/`load_in_4bit`.
 
-## Exact command to start LoRA training
+## Exact commands to start LoRA training
+
+Dev smoke profile (low-cost sanity check):
 
 ```bash
-python -m src.training.lora_train --config configs/train_lora.yaml
+python -m src.training.lora_train --config configs/train_lora.dev.yaml
 ```
 
-(Equivalent wrapper script: `bash scripts/run_lora.sh`.)
+Final report-grade profile (required for report references):
+
+```bash
+python -m src.training.lora_train --config configs/train_lora.final.yaml --final-report
+```
+
+Equivalent wrapper script:
+
+```bash
+bash scripts/run_lora.sh --profile dev
+bash scripts/run_lora.sh --profile final --final-report
+```
 
 ## Training dependency compatibility (pinned)
 
@@ -172,7 +188,7 @@ After training finishes, artifacts are written under:
 
 How to find `run_id`:
 
-- If `run_id` is explicitly set in `configs/train_lora.yaml`, that value is used.
+- If `run_id` is explicitly set in the selected profile config (`configs/train_lora.dev.yaml` or `configs/train_lora.final.yaml`), that value is used.
 - If `auto_run_id: true` and `run_id: null`, a UTC timestamp+suffix is generated.
 - Read `outputs/runs/<run_id>/train/params.json` and inspect its `run_id` field (or use the path printed at the end of training).
 
@@ -180,7 +196,7 @@ How to find `run_id`:
 
 ### Device selection
 
-- `device_map: auto` (default in `configs/train_lora.yaml`) lets Transformers place model weights automatically, typically preferring GPU when available.
+- `device_map: auto` (default in both training profile configs) lets Transformers place model weights automatically, typically preferring GPU when available.
 - In single-GPU training without quantization/offload, `src.training.lora_train` now omits `device_map` and keeps the model fully on CUDA.
 - A Colab-ready profile is available at `configs/profiles/colab_train_lora.yaml`; it sets `device_map: null` to avoid `device_map: auto` during training runs.
 - For quick, stable LR comparisons, use `configs/profiles/colab_lr_sweep_stable.yaml` (2e-4, 1e-4, 5e-5) with fixed `seed: 42` and `max_steps: 120`.
