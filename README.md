@@ -194,6 +194,24 @@ How to find `run_id`:
 - If `auto_run_id: true` and `run_id: null`, a UTC timestamp+suffix is generated.
 - Read `outputs/runs/<run_id>/train/params.json` and inspect its `run_id` field (or use the path printed at the end of training).
 
+## Final-run gate (required before attribution)
+
+Before starting the attribution phase, run the final gate to mark the training run as pass/fail against objective criteria:
+
+```bash
+python scripts/final_run_check.py --train-dir outputs/runs/<run_id>/train
+```
+
+The gate checks:
+
+- minimum training progress (steps + epochs),
+- acceptable loss behavior,
+- required train artifacts,
+- required runtime metrics capture,
+- downstream output validation pass.
+
+Detailed checklist and thresholds are documented in `docs/final_run_checklist.md`.
+
 ## GPU/CPU notes and troubleshooting
 
 ### Device selection
