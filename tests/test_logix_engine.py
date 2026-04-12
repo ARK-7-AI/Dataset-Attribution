@@ -13,6 +13,10 @@ from src.attribution.logix_engine import run_logix_engine
 
 class _FakeLogIX:
     @staticmethod
+    def init(**kwargs):
+        return {"status": "initialized", **kwargs}
+
+    @staticmethod
     def setup(**kwargs):
         return {"session": "fake", **kwargs}
 
@@ -24,6 +28,48 @@ class _FakeLogIX:
             "num_ranked": len(sample_ids),
             "top_sample_id": sample_ids[0] if sample_ids else None,
         }
+
+
+class _OrderedLogIX:
+    events: list[str] = []
+
+    @classmethod
+    def init(cls, **kwargs):
+        cls.events.append("init")
+        return kwargs
+
+    @classmethod
+    def setup(cls, **kwargs):
+        cls.events.append("setup")
+        return {"session": "ordered", **kwargs}
+
+    @classmethod
+    def extract_log(cls, **kwargs):
+        cls.events.append("extract_log")
+        return {"status": "ok", "kwargs": kwargs}
+
+    @classmethod
+    def score_influence(cls, **kwargs):
+        cls.events.append("score_influence")
+        return {
+            test_id: {train_id: float(index + 1) for index, train_id in enumerate(kwargs["train_sample_ids"])}
+            for test_id in kwargs["test_sample_ids"]
+        }
+
+    @classmethod
+    def run(cls, **kwargs):
+        cls.events.append("run")
+        return {"status": "ok", "num_ranked": len(kwargs.get("sample_ids", []))}
+
+
+class _NoInitLogIX:
+    @staticmethod
+    def setup(**kwargs):
+        return kwargs
+
+    @staticmethod
+    def run(**kwargs):
+        return {"status": "ok", "kwargs": kwargs}
 
 
 def _write_manifest(path: Path, count: int, start: int = 0) -> None:
@@ -485,3 +531,87 @@ def test_logix_engine_tiny_smoke_flow_is_deterministic(tmp_path: Path) -> None:
         encoding="utf-8"
     )
     assert first.topk_path.read_text(encoding="utf-8") == second.topk_path.read_text(encoding="utf-8")
+
+
+def test_logix_engine_initializes_logix_before_downstream_calls(tmp_path: Path) -> None:
+    _OrderedLogIX.events = []
+    run_root = tmp_path / "outputs" / "runs" / "ordered-run"
+    (run_root / "train" / "adapter").mkdir(parents=True, exist_ok=True)
+    (run_root / "train" / "tokenizer").mkdir(parents=True, exist_ok=True)
+    (run_root / "train" / "tokenizer" / "tokenizer.json").write_text("{}", encoding="utf-8")
+    _write_manifest(run_root / "splits" / "train.csv", count=3, start=0)
+    _write_manifest(run_root / "splits" / "test.csv", count=2, start=100)
+
+    config_path = tmp_path / "attribution_logix_ordered.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "run_id": "ordered-run",
+                "project_name": "ordered-project",
+                "output_root": str(tmp_path / "outputs" / "runs"),
+                "top_k": 1,
+                "train_subset_size": 3,
+                "influence": {
+                    "mode": "ihvp",
+                    "ihvp": {
+                        "damping": 0.01,
+                        "scale": 10.0,
+                        "recursion_depth": 8,
+                        "num_samples": 1,
+                    },
+                },
+                "lora": {"lora_only": True},
+                "logix": {"setup": {}, "run": {}, "init": {"workspace": "tmp"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    run_logix_engine(config_path, logix_module=_OrderedLogIX)
+    assert "init" in _OrderedLogIX.events
+    init_index = _OrderedLogIX.events.index("init")
+    assert init_index < _OrderedLogIX.events.index("setup")
+    assert init_index < _OrderedLogIX.events.index("extract_log")
+    assert init_index < _OrderedLogIX.events.index("score_influence")
+    assert init_index < _OrderedLogIX.events.index("run")
+
+
+def test_logix_engine_fails_with_explicit_error_when_logix_init_is_unavailable(tmp_path: Path) -> None:
+    run_root = tmp_path / "outputs" / "runs" / "no-init-run"
+    (run_root / "train" / "adapter").mkdir(parents=True, exist_ok=True)
+    (run_root / "train" / "tokenizer").mkdir(parents=True, exist_ok=True)
+    (run_root / "train" / "tokenizer" / "tokenizer.json").write_text("{}", encoding="utf-8")
+    _write_manifest(run_root / "splits" / "train.csv", count=2, start=0)
+    _write_manifest(run_root / "splits" / "test.csv", count=1, start=100)
+
+    config_path = tmp_path / "attribution_logix_no_init.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "run_id": "no-init-run",
+                "output_root": str(tmp_path / "outputs" / "runs"),
+                "top_k": 1,
+                "train_subset_size": 2,
+                "influence": {
+                    "mode": "ihvp",
+                    "ihvp": {
+                        "damping": 0.01,
+                        "scale": 10.0,
+                        "recursion_depth": 8,
+                        "num_samples": 1,
+                    },
+                },
+                "lora": {"lora_only": True},
+                "logix": {"setup": {}, "run": {}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        run_logix_engine(config_path, logix_module=_NoInitLogIX)
+    except RuntimeError as exc:
+        assert "logix.init" in str(exc)
+        assert "incompatible LogIX version" in str(exc)
+    else:
+        raise AssertionError("Expected RuntimeError when logix.init is unavailable")

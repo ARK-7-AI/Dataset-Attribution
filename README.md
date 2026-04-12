@@ -259,6 +259,7 @@ bash scripts/run_step1_final_check.sh --run-id <run_id>
   - Step 1 gate has passed for the same run.
   - `logix` Python package is installed (via project dependencies including `logix-ai`).
   - Attribution config exists (default: `configs/attribution_logix.yaml`) and points to valid run artifacts/manifests.
+  - LogIX runtime initialization is required before extraction/influence calls; the engine now performs `logix.init(...)` automatically and expects stable metadata keys including `project_name` (recommended) and `run_id`.
   - Default behavior uses one `run_id` for splits and training artifacts, but mixed-run layouts are supported when explicit manifest paths are set (for example: training artifacts from `final_report_run` with split CSVs from `default_run`).
 - Exact command:
 
@@ -271,6 +272,7 @@ bash scripts/run_step2_logix.sh --config configs/attribution_logix.yaml
   - Runtime is sensitive to IHVP controls (`recursion_depth`, `num_samples`) and available accelerator resources.
 - Common failure modes and fixes:
   - `Python package 'logix' is not importable`: install dependencies that include `logix-ai`.
+  - `LogIX is not initialized` / init failure: verify config includes a valid `run_id`, set `project_name` (or rely on default), and confirm the installed LogIX package version supports `logix.init(...)`.
   - Config not found / invalid config keys: verify `--config` path and required keys in YAML (`run_id`, `output_root`, `top_k`, `train_subset_size`, IHVP controls).
   - Missing train artifacts or manifest paths: ensure training outputs and split manifests exist for the configured `run_id`.
   - OOM or slow execution: lower `train_subset_size`, reduce IHVP recursion/sample settings, or use a more capable GPU.
