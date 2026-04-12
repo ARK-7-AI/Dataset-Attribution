@@ -5,7 +5,10 @@ seed: 2026
 top_k: 50
 train_subset_size: 600
 
-train_manifest_path: outputs/runs/default_run/splits/train.csv
+# Optional split-path overrides for mixed-run setups.
+# Leave unset/null to use output_root/run_id/splits/{train,test}.csv.
+train_manifest_path:
+test_manifest_path:
 
 influence:
   mode: ihvp

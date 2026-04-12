@@ -36,6 +36,8 @@ class LogIXEngineConfig:
     lora_only: bool
     lora_adapter_path: Path | None
     tokenizer_path: Path | None
+    train_split_path_override: Path | None
+    test_split_path_override: Path | None
     setup_kwargs: dict[str, Any]
     run_kwargs: dict[str, Any]
     init_kwargs: dict[str, Any]
@@ -132,6 +134,10 @@ def _load_config(config_path: str | Path) -> LogIXEngineConfig:
     lora_only = bool(lora_cfg.get("lora_only", True))
     adapter_path_raw = lora_cfg.get("adapter_path")
     lora_adapter_path = Path(str(adapter_path_raw)) if adapter_path_raw else None
+    train_split_raw = raw.get("train_manifest_path")
+    test_split_raw = raw.get("test_manifest_path")
+    train_split_path_override = Path(str(train_split_raw)) if train_split_raw else None
+    test_split_path_override = Path(str(test_split_raw)) if test_split_raw else None
 
     logix_cfg = raw.get("logix", {})
     if logix_cfg is None:
@@ -176,6 +182,8 @@ def _load_config(config_path: str | Path) -> LogIXEngineConfig:
         lora_only=lora_only,
         lora_adapter_path=lora_adapter_path,
         tokenizer_path=None,
+        train_split_path_override=train_split_path_override,
+        test_split_path_override=test_split_path_override,
         setup_kwargs={str(k): v for k, v in setup_kwargs.items()},
         run_kwargs={str(k): v for k, v in run_kwargs.items()},
         init_kwargs={str(k): v for k, v in init_kwargs.items()},
@@ -184,6 +192,43 @@ def _load_config(config_path: str | Path) -> LogIXEngineConfig:
         score_kwargs={str(k): v for k, v in score_kwargs.items()},
         test_subset_size=test_subset_size,
     )
+
+
+def _validate_required_inputs(config: LogIXEngineConfig) -> None:
+    run_root = config.output_root / config.run_id
+    train_dir = run_root / "train"
+    train_split_path = config.train_split_path_override or (run_root / "splits" / "train.csv")
+    test_split_path = config.test_split_path_override or (run_root / "splits" / "test.csv")
+
+    required_paths: list[tuple[str, Path]] = [
+        ("train split manifest", train_split_path),
+        ("test split manifest", test_split_path),
+    ]
+    missing_paths = [f"- {label}: {path}" for label, path in required_paths if not path.exists()]
+    if config.lora_only:
+        adapter_dir = train_dir / "adapter"
+        legacy_adapter = train_dir / "adapter_checkpoint.bin"
+        if not adapter_dir.exists() and not legacy_adapter.exists():
+            missing_paths.append(
+                "- LoRA adapter artifacts: expected one of "
+                f"{adapter_dir} or {legacy_adapter}"
+            )
+
+    tokenizer_dir = train_dir / "tokenizer"
+    legacy_tokenizer = train_dir / "tokenizer.json"
+    if not tokenizer_dir.exists() and not legacy_tokenizer.exists():
+        missing_paths.append(
+            "- tokenizer artifacts: expected one of "
+            f"{tokenizer_dir} or {legacy_tokenizer}"
+        )
+    if missing_paths:
+        raise FileNotFoundError(
+            "LogIX preflight failed for selected run_id="
+            f"'{config.run_id}'. Missing required inputs:\n"
+            + "\n".join(missing_paths)
+            + "\nSuggested fix: use the same run_id for splits, training artifacts, and attribution; "
+            "or set train_manifest_path/test_manifest_path overrides for mixed-run setups."
+        )
 
 
 def _import_logix_module() -> Any:
@@ -451,6 +496,7 @@ def run_logix_engine(config_path: str | Path, logix_module: Any | None = None) -
     """Run LogIX with config-driven setup and persist reproducible artifacts."""
 
     config = _load_config(config_path)
+    _validate_required_inputs(config)
     if logix_module is None:
         logix_module = _import_logix_module()
 
@@ -459,6 +505,8 @@ def run_logix_engine(config_path: str | Path, logix_module: Any | None = None) -
         output_root=config.output_root,
         run_id=config.run_id,
         require_gradients=require_gradients,
+        train_split_path_override=config.train_split_path_override,
+        test_split_path_override=config.test_split_path_override,
     )
     output_dir = resolved.run_root / "attribution" / "logix"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -575,6 +623,12 @@ def run_logix_engine(config_path: str | Path, logix_module: Any | None = None) -
         "lora_adapter_path": str(config.lora_adapter_path) if config.lora_adapter_path else None,
         "train_manifest_path": str(resolved.train_split_path),
         "test_manifest_path": str(resolved.test_split_path),
+        "train_manifest_path_override": (
+            str(config.train_split_path_override) if config.train_split_path_override else None
+        ),
+        "test_manifest_path_override": (
+            str(config.test_split_path_override) if config.test_split_path_override else None
+        ),
         "tokenizer_path": str(config.tokenizer_path) if config.tokenizer_path else None,
         "sample_id_mapping_size": len(resolved.sample_id_to_train_index),
         "gradient_subset_path": str(resolved.gradient_subset_path) if resolved.gradient_subset_path else None,
