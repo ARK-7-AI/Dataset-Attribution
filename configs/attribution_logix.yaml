@@ -1,0 +1,24 @@
+run_id: default_run
+output_root: outputs/runs
+model_name_or_path: llama3.2:3b
+seed: 2026
+top_k: 50
+train_subset_size: 600
+
+train_manifest_path: outputs/runs/default_run/splits/train.csv
+
+influence:
+  mode: ihvp
+  ihvp:
+    damping: 0.01
+    scale: 25.0
+    recursion_depth: 256
+    num_samples: 1
+
+lora:
+  lora_only: true
+  adapter_path: outputs/runs/default_run/train/adapter
+
+logix:
+  setup: {}
+  run: {}

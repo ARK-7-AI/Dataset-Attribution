@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import importlib
 import json
 from pathlib import Path
+import re
 from typing import Any, Mapping, Sequence
 
 import yaml
@@ -22,6 +23,12 @@ class LogIXEngineConfig:
     output_root: Path
     model_name_or_path: str
     seed: int
+    top_k: int
+    train_subset_size: int
+    influence_mode: str
+    ihvp_controls: dict[str, float | int]
+    lora_only: bool
+    lora_adapter_path: Path | None
     train_manifest_path: Path | None
     setup_kwargs: dict[str, Any]
     run_kwargs: dict[str, Any]
@@ -61,6 +68,64 @@ def _load_config(config_path: str | Path) -> LogIXEngineConfig:
     if not isinstance(raw, dict):
         raise ValueError("Attribution config must be a mapping")
 
+    required_keys = ("run_id", "output_root", "top_k", "train_subset_size")
+    missing_required = [key for key in required_keys if key not in raw]
+    if missing_required:
+        raise ValueError(f"Missing required config keys: {', '.join(missing_required)}")
+
+    run_id = str(raw.get("run_id", ""))
+    if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,62}[A-Za-z0-9])?", run_id):
+        raise ValueError(
+            "Invalid run_id. Use 1-64 chars from [A-Za-z0-9_.-], and avoid leading/trailing punctuation."
+        )
+
+    output_root = Path(str(raw.get("output_root", "")))
+    if not str(output_root):
+        raise ValueError("output_root must be a non-empty path")
+
+    top_k = int(raw.get("top_k", 0))
+    if top_k <= 0:
+        raise ValueError("top_k must be a positive integer")
+
+    train_subset_size = int(raw.get("train_subset_size", 0))
+    if train_subset_size <= 0:
+        raise ValueError("train_subset_size must be a positive integer")
+
+    influence_cfg = raw.get("influence", {}) or {}
+    if not isinstance(influence_cfg, dict):
+        raise ValueError("influence must be a mapping")
+    influence_mode = str(influence_cfg.get("mode", "ihvp"))
+    if influence_mode != "ihvp":
+        raise ValueError(f"Unsupported influence mode: {influence_mode}")
+
+    ihvp_cfg = influence_cfg.get("ihvp", {}) or {}
+    if not isinstance(ihvp_cfg, dict):
+        raise ValueError("influence.ihvp must be a mapping")
+    required_ihvp = ("damping", "scale", "recursion_depth", "num_samples")
+    missing_ihvp = [key for key in required_ihvp if key not in ihvp_cfg]
+    if missing_ihvp:
+        raise ValueError(f"Missing IHVP controls: {', '.join(missing_ihvp)}")
+    ihvp_controls: dict[str, float | int] = {
+        "damping": float(ihvp_cfg["damping"]),
+        "scale": float(ihvp_cfg["scale"]),
+        "recursion_depth": int(ihvp_cfg["recursion_depth"]),
+        "num_samples": int(ihvp_cfg["num_samples"]),
+    }
+    if ihvp_controls["recursion_depth"] <= 0 or ihvp_controls["num_samples"] <= 0:
+        raise ValueError("IHVP controls recursion_depth and num_samples must be positive")
+
+    lora_cfg = raw.get("lora", {}) or {}
+    if not isinstance(lora_cfg, dict):
+        raise ValueError("lora must be a mapping")
+    lora_only = bool(lora_cfg.get("lora_only", True))
+    adapter_path_raw = lora_cfg.get("adapter_path")
+    lora_adapter_path = Path(str(adapter_path_raw)) if adapter_path_raw else None
+    if lora_only:
+        if lora_adapter_path is None:
+            raise ValueError("lora.adapter_path is required when lora.lora_only is true")
+        if not lora_adapter_path.exists():
+            raise FileNotFoundError(f"LoRA adapter path not found: {lora_adapter_path}")
+
     logix_cfg = raw.get("logix", {})
     if logix_cfg is None:
         logix_cfg = {}
@@ -75,13 +140,22 @@ def _load_config(config_path: str | Path) -> LogIXEngineConfig:
         raise ValueError("logix.run must be a mapping")
 
     train_manifest = raw.get("train_manifest_path")
+    train_manifest_path = Path(train_manifest) if train_manifest else None
+    if train_manifest_path is not None and not train_manifest_path.exists():
+        raise FileNotFoundError(f"Train split manifest not found: {train_manifest_path}")
 
     return LogIXEngineConfig(
-        run_id=str(raw.get("run_id", "default_run")),
-        output_root=Path(raw.get("output_root", "outputs/runs")),
+        run_id=run_id,
+        output_root=output_root,
         model_name_or_path=str(raw.get("model_name_or_path", "unknown-model")),
         seed=int(raw.get("seed", 42)),
-        train_manifest_path=Path(train_manifest) if train_manifest else None,
+        top_k=top_k,
+        train_subset_size=train_subset_size,
+        influence_mode=influence_mode,
+        ihvp_controls=ihvp_controls,
+        lora_only=lora_only,
+        lora_adapter_path=lora_adapter_path,
+        train_manifest_path=train_manifest_path,
         setup_kwargs={str(k): v for k, v in setup_kwargs.items()},
         run_kwargs={str(k): v for k, v in run_kwargs.items()},
     )
@@ -141,7 +215,12 @@ def execute_logix(
 
     run_payload = {
         "context": context,
-        "sample_ids": sample_ids,
+        "sample_ids": sample_ids[: config.train_subset_size],
+        "top_k": config.top_k,
+        "influence_mode": config.influence_mode,
+        "ihvp_controls": config.ihvp_controls,
+        "lora_only": config.lora_only,
+        "lora_adapter_path": str(config.lora_adapter_path) if config.lora_adapter_path else None,
         **config.run_kwargs,
     }
 
@@ -189,6 +268,12 @@ def run_logix_engine(config_path: str | Path, logix_module: Any | None = None) -
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "model_name_or_path": config.model_name_or_path,
         "seed": config.seed,
+        "top_k": config.top_k,
+        "train_subset_size": config.train_subset_size,
+        "influence_mode": config.influence_mode,
+        "ihvp_controls": config.ihvp_controls,
+        "lora_only": config.lora_only,
+        "lora_adapter_path": str(config.lora_adapter_path) if config.lora_adapter_path else None,
         "train_manifest_path": str(config.train_manifest_path) if config.train_manifest_path else None,
         "setup_kwargs": config.setup_kwargs,
         "run_kwargs": config.run_kwargs,
