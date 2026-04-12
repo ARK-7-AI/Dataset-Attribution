@@ -13,6 +13,8 @@ from typing import Any, Sequence
 
 import yaml
 
+from src.attribution.input_resolver import resolve_attribution_inputs
+
 
 @dataclass(frozen=True)
 class GradientLoggerConfig:
@@ -75,22 +77,6 @@ def _load_config(config_path: str | Path) -> GradientLoggerConfig:
     )
 
 
-def _read_train_sample_ids(train_manifest_path: Path) -> list[str]:
-    if not train_manifest_path.exists():
-        raise FileNotFoundError(f"Train split manifest not found: {train_manifest_path}")
-
-    with train_manifest_path.open("r", encoding="utf-8", newline="") as handle:
-        reader = csv.DictReader(handle)
-        if "sample_id" not in (reader.fieldnames or []):
-            raise ValueError("Train manifest must include sample_id column")
-        sample_ids = [row["sample_id"] for row in reader if row.get("sample_id")]
-
-    if not sample_ids:
-        raise ValueError("Train manifest is empty; cannot extract gradients")
-
-    return sample_ids
-
-
 def _deterministic_subset(sample_ids: list[str], subset_size: int, seed: int) -> list[str]:
     ranked: list[tuple[str, str]] = []
     for sample_id in sample_ids:
@@ -125,32 +111,19 @@ def _gradient_matrix(sample_ids: list[str], parameter_names: list[str], seed: in
     return matrix
 
 
-def _resolve_adapter_artifact(run_root: Path) -> Path:
-    """Resolve adapter artifact path for both new and legacy layouts."""
-    train_dir = run_root / "train"
-    adapter_dir = train_dir / "adapter"
-    if adapter_dir.is_dir():
-        return adapter_dir
-
-    legacy_checkpoint = train_dir / "adapter_checkpoint.bin"
-    if legacy_checkpoint.is_file():
-        return legacy_checkpoint
-
-    raise FileNotFoundError(
-        "Adapter artifact not found. Expected either "
-        f"directory: {adapter_dir} or file: {legacy_checkpoint}"
-    )
-
-
 def run_gradient_logging(config_path: str | Path) -> Path:
     """Extract deterministic LoRA gradients and persist run artifacts."""
 
     config = _load_config(config_path)
-    run_root = config.output_root / config.run_id
-    adapter_artifact = _resolve_adapter_artifact(run_root)
+    resolved = resolve_attribution_inputs(
+        output_root=config.output_root,
+        run_id=config.run_id,
+        require_gradients=False,
+    )
+    run_root = resolved.run_root
+    adapter_artifact = resolved.adapter_artifact
 
-    train_manifest = run_root / "splits" / "train.csv"
-    all_train_sample_ids = _read_train_sample_ids(train_manifest)
+    all_train_sample_ids = resolved.train_sample_ids
     subset_sample_ids = _deterministic_subset(
         all_train_sample_ids,
         subset_size=config.gradient_subset_size,

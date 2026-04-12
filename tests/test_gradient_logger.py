@@ -14,12 +14,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.attribution.gradient_logger import run_gradient_logging
 
 
-def _write_train_manifest(path: Path, count: int) -> None:
+def _write_manifest(path: Path, count: int, start: int = 0) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=["sample_id", "source", "license"])
         writer.writeheader()
-        for idx in range(count):
+        for idx in range(start, start + count):
             writer.writerow(
                 {
                     "sample_id": f"sample-{idx:05d}",
@@ -32,8 +32,11 @@ def _write_train_manifest(path: Path, count: int) -> None:
 def test_gradient_logger_creates_expected_artifacts_for_600_subset(tmp_path: Path) -> None:
     run_root = tmp_path / "outputs" / "runs" / "unit-run"
     (run_root / "train" / "adapter").mkdir(parents=True, exist_ok=True)
+    (run_root / "train" / "tokenizer").mkdir(parents=True, exist_ok=True)
     (run_root / "train" / "adapter" / "adapter_model.bin").write_bytes(b"adapter")
-    _write_train_manifest(run_root / "splits" / "train.csv", count=3600)
+    (run_root / "train" / "tokenizer" / "tokenizer.json").write_text("{}", encoding="utf-8")
+    _write_manifest(run_root / "splits" / "train.csv", count=3600)
+    _write_manifest(run_root / "splits" / "test.csv", count=10, start=4000)
 
     config_path = tmp_path / "attribution.yaml"
     config_path.write_text(
@@ -85,7 +88,9 @@ def test_gradient_logger_supports_legacy_adapter_checkpoint(tmp_path: Path) -> N
     run_root = tmp_path / "outputs" / "runs" / "legacy-run"
     (run_root / "train").mkdir(parents=True, exist_ok=True)
     (run_root / "train" / "adapter_checkpoint.bin").write_bytes(b"adapter")
-    _write_train_manifest(run_root / "splits" / "train.csv", count=10)
+    (run_root / "train" / "tokenizer.json").write_text("{}", encoding="utf-8")
+    _write_manifest(run_root / "splits" / "train.csv", count=10)
+    _write_manifest(run_root / "splits" / "test.csv", count=2, start=100)
 
     config_path = tmp_path / "attribution_legacy.yaml"
     config_path.write_text(
