@@ -228,6 +228,52 @@ The gate checks:
 
 Detailed checklist and thresholds are documented in `docs/final_run_checklist.md`.
 
+## One-command wrappers for attribution steps
+
+Use the wrapper scripts below to run the pre-attribution gate and LogIX attribution in one command.
+
+### Step 1: final-run gate wrapper
+
+- Script: `scripts/run_step1_final_check.sh`
+- Prerequisites:
+  - A completed training run exists under `outputs/runs/<run_id>/train`.
+  - Python environment dependencies from `pyproject.toml` are installed.
+- Exact command:
+
+```bash
+bash scripts/run_step1_final_check.sh --run-id <run_id>
+```
+
+- Expected runtime characteristics:
+  - Usually CPU-only and fast (typically a few seconds to ~1 minute), because it validates artifacts and metrics JSON files.
+  - Runtime scales mainly with artifact/log file size in the train directory.
+- Common failure modes and fixes:
+  - `Training directory not found`: confirm `run_id` and `output_root`, or run training first.
+  - Missing required artifacts/metrics in gate output: rerun training and ensure it completes cleanly.
+  - Validation failures from strict thresholds: inspect `final_run_check.json` and, if intentional, rerun `scripts/final_run_check.py` with explicit thresholds.
+
+### Step 2: LogIX attribution wrapper
+
+- Script: `scripts/run_step2_logix.sh`
+- Prerequisites:
+  - Step 1 gate has passed for the same run.
+  - `logix` Python package is installed (via project dependencies including `logix-ai`).
+  - Attribution config exists (default: `configs/attribution_logix.yaml`) and points to valid run artifacts/manifests.
+- Exact command:
+
+```bash
+bash scripts/run_step2_logix.sh --config configs/attribution_logix.yaml
+```
+
+- Expected runtime characteristics:
+  - Typically longer than the gate check (often several minutes to tens of minutes) depending on model size, hardware, and `train_subset_size`.
+  - Runtime is sensitive to IHVP controls (`recursion_depth`, `num_samples`) and available accelerator resources.
+- Common failure modes and fixes:
+  - `Python package 'logix' is not importable`: install dependencies that include `logix-ai`.
+  - Config not found / invalid config keys: verify `--config` path and required keys in YAML (`run_id`, `output_root`, `top_k`, `train_subset_size`, IHVP controls).
+  - Missing train artifacts or manifest paths: ensure training outputs and split manifests exist for the configured `run_id`.
+  - OOM or slow execution: lower `train_subset_size`, reduce IHVP recursion/sample settings, or use a more capable GPU.
+
 ## GPU/CPU notes and troubleshooting
 
 ### Device selection
