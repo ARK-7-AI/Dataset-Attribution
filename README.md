@@ -35,6 +35,12 @@ python -m src.training.lora_train --config configs/train_lora.dev.yaml
 
 This keeps execution consistent across local runs, CI, and future script wrappers.
 
+For LogIX attribution integration, use:
+
+```bash
+python -m src.attribution.logix_engine --config configs/attribution.yaml
+```
+
 ## Dataset split input formats
 
 `src.data.split.read_dataset()` auto-detects the dataset format by file extension:

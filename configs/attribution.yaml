@@ -11,3 +11,7 @@ gradients:
   batch_size: 32
   dtype: float32
   layer_filter: lora
+
+logix:
+  setup: {}
+  run: {}
