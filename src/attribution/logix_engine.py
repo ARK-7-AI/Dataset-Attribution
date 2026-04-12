@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import importlib
+import inspect
 import json
 import logging
 from pathlib import Path
@@ -26,6 +27,7 @@ class LogIXEngineConfig:
     """Configuration needed to execute a LogIX attribution run."""
 
     run_id: str
+    project_name: str
     output_root: Path
     model_name_or_path: str
     seed: int
@@ -56,6 +58,9 @@ class LogIXRunArtifacts:
     metadata_path: Path
     influence_scores_path: Path
     topk_path: Path
+
+
+_INITIALIZED_LOGIX_MODULE_IDS: set[int] = set()
 
 
 def build_parser() -> ArgumentParser:
@@ -175,6 +180,7 @@ def _load_config(config_path: str | Path) -> LogIXEngineConfig:
 
     return LogIXEngineConfig(
         run_id=run_id,
+        project_name=str(raw.get("project_name", "dataset-attribution")),
         output_root=output_root,
         model_name_or_path=str(raw.get("model_name_or_path", "unknown-model")),
         seed=int(raw.get("seed", 42)),
@@ -196,6 +202,56 @@ def _load_config(config_path: str | Path) -> LogIXEngineConfig:
         score_kwargs={str(k): v for k, v in score_kwargs.items()},
         test_subset_size=test_subset_size,
     )
+
+
+def _build_logix_init_payload(config: LogIXEngineConfig) -> dict[str, Any]:
+    runtime_config_payload = {
+        "model_name_or_path": config.model_name_or_path,
+        "seed": config.seed,
+        "top_k": config.top_k,
+        "train_subset_size": config.train_subset_size,
+        "influence_mode": config.influence_mode,
+    }
+    payload: dict[str, Any] = {
+        "project_name": config.project_name,
+        "run_name": config.run_id,
+        "run_id": config.run_id,
+        "config": runtime_config_payload,
+        **config.init_kwargs,
+    }
+    return payload
+
+
+def _ensure_logix_initialized(config: LogIXEngineConfig, logix_module: Any, logger: logging.Logger) -> None:
+    module_id = id(logix_module)
+    if module_id in _INITIALIZED_LOGIX_MODULE_IDS:
+        logger.info("LogIX already initialized in this process; skipping duplicate init call")
+        return
+
+    init_fn = getattr(logix_module, "init", None)
+    if not callable(init_fn):
+        raise RuntimeError(
+            "LogIX initialization is required but `logix.init(...)` is unavailable on the installed package. "
+            "Probable causes: incompatible LogIX version or incorrect package installation."
+        )
+
+    payload = _build_logix_init_payload(config)
+    try:
+        signature = inspect.signature(init_fn)
+        accepts_var_kwargs = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in signature.parameters.values()
+        )
+        init_kwargs = payload if accepts_var_kwargs else {k: v for k, v in payload.items() if k in signature.parameters}
+        init_fn(**init_kwargs)
+    except Exception as exc:
+        raise RuntimeError(
+            "Failed to initialize LogIX via `logix.init(...)`. "
+            "Probable causes: invalid LogIX init config payload or incompatible LogIX package version."
+        ) from exc
+
+    _INITIALIZED_LOGIX_MODULE_IDS.add(module_id)
+    logger.info("Initialized LogIX project=%s run_id=%s", config.project_name, config.run_id)
 
 
 def _resolve_effective_input_paths(config: LogIXEngineConfig) -> dict[str, Path]:
@@ -560,6 +616,7 @@ def run_logix_engine(config_path: str | Path, logix_module: Any | None = None) -
     checkpoint_path = _write_checkpoint(output_dir, checkpoint)
 
     sample_ids = resolved.train_sample_ids
+    _ensure_logix_initialized(config=config, logix_module=logix_module, logger=logger)
     config = LogIXEngineConfig(
         **{
             **config.__dict__,
