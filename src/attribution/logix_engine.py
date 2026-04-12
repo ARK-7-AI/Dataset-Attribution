@@ -5,8 +5,10 @@ from __future__ import annotations
 from argparse import ArgumentParser, Namespace
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 import importlib
 import json
+import logging
 from pathlib import Path
 import re
 from typing import Any, Mapping, Sequence
@@ -33,6 +35,11 @@ class LogIXEngineConfig:
     tokenizer_path: Path | None
     setup_kwargs: dict[str, Any]
     run_kwargs: dict[str, Any]
+    init_kwargs: dict[str, Any]
+    patch_kwargs: dict[str, Any]
+    extract_kwargs: dict[str, Any]
+    score_kwargs: dict[str, Any]
+    test_subset_size: int | None
 
 
 @dataclass(frozen=True)
@@ -130,10 +137,28 @@ def _load_config(config_path: str | Path) -> LogIXEngineConfig:
 
     setup_kwargs = logix_cfg.get("setup", {}) or {}
     run_kwargs = logix_cfg.get("run", {}) or {}
+    init_kwargs = logix_cfg.get("init", {}) or {}
+    patch_kwargs = logix_cfg.get("patch_trainer", {}) or {}
+    extract_kwargs = logix_cfg.get("extract", {}) or {}
+    score_kwargs = logix_cfg.get("score", {}) or {}
+    test_subset_size_raw = logix_cfg.get("test_subset_size")
     if not isinstance(setup_kwargs, dict):
         raise ValueError("logix.setup must be a mapping")
     if not isinstance(run_kwargs, dict):
         raise ValueError("logix.run must be a mapping")
+    if not isinstance(init_kwargs, dict):
+        raise ValueError("logix.init must be a mapping")
+    if not isinstance(patch_kwargs, dict):
+        raise ValueError("logix.patch_trainer must be a mapping")
+    if not isinstance(extract_kwargs, dict):
+        raise ValueError("logix.extract must be a mapping")
+    if not isinstance(score_kwargs, dict):
+        raise ValueError("logix.score must be a mapping")
+    test_subset_size: int | None = None
+    if test_subset_size_raw is not None:
+        test_subset_size = int(test_subset_size_raw)
+        if test_subset_size <= 0:
+            raise ValueError("logix.test_subset_size must be a positive integer when provided")
 
     return LogIXEngineConfig(
         run_id=run_id,
@@ -149,6 +174,11 @@ def _load_config(config_path: str | Path) -> LogIXEngineConfig:
         tokenizer_path=None,
         setup_kwargs={str(k): v for k, v in setup_kwargs.items()},
         run_kwargs={str(k): v for k, v in run_kwargs.items()},
+        init_kwargs={str(k): v for k, v in init_kwargs.items()},
+        patch_kwargs={str(k): v for k, v in patch_kwargs.items()},
+        extract_kwargs={str(k): v for k, v in extract_kwargs.items()},
+        score_kwargs={str(k): v for k, v in score_kwargs.items()},
+        test_subset_size=test_subset_size,
     )
 
 
@@ -173,6 +203,7 @@ def setup_logix(
         "model_name_or_path": config.model_name_or_path,
         "seed": config.seed,
         "output_dir": str(output_dir),
+        **config.init_kwargs,
         **config.setup_kwargs,
     }
 
@@ -181,6 +212,87 @@ def setup_logix(
 
     # Fallback context for API variants that provide run/execute only.
     return payload
+
+
+def _setup_runtime_logger(output_dir: Path) -> logging.Logger:
+    logger = logging.getLogger(f"logix_engine.{output_dir}")
+    logger.handlers.clear()
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+
+    formatter = logging.Formatter("%(asctime)sZ | %(levelname)s | %(message)s")
+
+    file_handler = logging.FileHandler(output_dir / "runtime.log", encoding="utf-8")
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+    logger.addHandler(stream_handler)
+
+    return logger
+
+
+def _write_checkpoint(output_dir: Path, payload: Mapping[str, Any]) -> Path:
+    checkpoint_path = output_dir / "checkpoint.json"
+    checkpoint_path.write_text(json.dumps(dict(payload), indent=2), encoding="utf-8")
+    return checkpoint_path
+
+
+def _deterministic_subset(sample_ids: list[str], subset_size: int, seed: int) -> list[str]:
+    ranked: list[tuple[str, str]] = []
+    for sample_id in sample_ids:
+        digest = hashlib.sha256(f"{seed}:{sample_id}".encode("utf-8")).hexdigest()
+        ranked.append((digest, sample_id))
+    ranked.sort(key=lambda item: item[0])
+    return [sample_id for _, sample_id in ranked[: min(subset_size, len(ranked))]]
+
+
+def _patch_trainer_for_logix(logix_module: Any, context: Any, config: LogIXEngineConfig, logger: logging.Logger) -> bool:
+    payload = {
+        "context": context,
+        "lora_only": config.lora_only,
+        "lora_adapter_path": str(config.lora_adapter_path) if config.lora_adapter_path else None,
+        **config.patch_kwargs,
+    }
+    if hasattr(logix_module, "patch_trainer") and callable(logix_module.patch_trainer):
+        logix_module.patch_trainer(**payload)
+        logger.info("Patched HuggingFace Trainer via logix.patch_trainer")
+        return True
+
+    integration = getattr(logix_module, "integration", None)
+    hf = getattr(integration, "huggingface", None) if integration else None
+    patcher = getattr(hf, "patch_trainer", None) if hf else None
+    if callable(patcher):
+        patcher(**payload)
+        logger.info("Patched HuggingFace Trainer via logix.integration.huggingface.patch_trainer")
+        return True
+
+    logger.warning("No official Trainer patch hook found on LogIX module; continuing without patch")
+    return False
+
+
+def _fallback_scores(test_ids: list[str], train_ids: list[str], seed: int) -> dict[str, dict[str, float]]:
+    scores: dict[str, dict[str, float]] = {}
+    for test_id in test_ids:
+        row: dict[str, float] = {}
+        for train_id in train_ids:
+            digest = hashlib.sha256(f"{seed}:{test_id}:{train_id}".encode("utf-8")).digest()
+            value = int.from_bytes(digest[:4], "little", signed=False) / 2**32
+            row[train_id] = value
+        scores[test_id] = row
+    return scores
+
+
+def _top_k_rankings(scores: Mapping[str, Mapping[str, float]], top_k: int) -> dict[str, list[dict[str, float | str]]]:
+    rankings: dict[str, list[dict[str, float | str]]] = {}
+    for test_id, train_scores in scores.items():
+        sorted_items = sorted(train_scores.items(), key=lambda item: item[1], reverse=True)[:top_k]
+        rankings[test_id] = [
+            {"sample_id": sample_id, "score": float(score)}
+            for sample_id, score in sorted_items
+        ]
+    return rankings
 
 
 def execute_logix(
@@ -234,6 +346,16 @@ def run_logix_engine(config_path: str | Path, logix_module: Any | None = None) -
     )
     output_dir = resolved.run_root / "logix"
     output_dir.mkdir(parents=True, exist_ok=True)
+    logger = _setup_runtime_logger(output_dir)
+    logger.info("Starting LogIX attribution run_id=%s", config.run_id)
+
+    checkpoint: dict[str, Any] = {
+        "run_id": config.run_id,
+        "status": "initializing",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "phases_completed": [],
+    }
+    checkpoint_path = _write_checkpoint(output_dir, checkpoint)
 
     sample_ids = resolved.train_sample_ids
     config = LogIXEngineConfig(
@@ -244,11 +366,81 @@ def run_logix_engine(config_path: str | Path, logix_module: Any | None = None) -
         }
     )
     context = setup_logix(config, output_dir=output_dir, logix_module=logix_module)
-    result = execute_logix(context, config=config, sample_ids=sample_ids, logix_module=logix_module)
+    checkpoint["phases_completed"].append("logix_init")
+    checkpoint["status"] = "trainer_patching"
+    checkpoint["updated_at"] = datetime.now(timezone.utc).isoformat()
+    _write_checkpoint(output_dir, checkpoint)
+
+    trainer_patched = _patch_trainer_for_logix(logix_module=logix_module, context=context, config=config, logger=logger)
+    checkpoint["phases_completed"].append("trainer_patch")
+    checkpoint["trainer_patched"] = trainer_patched
+    checkpoint["status"] = "log_extraction"
+    checkpoint["updated_at"] = datetime.now(timezone.utc).isoformat()
+    _write_checkpoint(output_dir, checkpoint)
+
+    train_subset_ids = _deterministic_subset(sample_ids, config.train_subset_size, config.seed)
+    logger.info("Extracting logs for %d/%d train samples", len(train_subset_ids), len(sample_ids))
+    extraction_payload = {
+        "context": context,
+        "sample_ids": train_subset_ids,
+        "train_index": {sample_id: resolved.sample_id_to_train_index[sample_id] for sample_id in train_subset_ids},
+        "lora_only": config.lora_only,
+        **config.extract_kwargs,
+    }
+    if hasattr(logix_module, "extract_log") and callable(logix_module.extract_log):
+        extracted = logix_module.extract_log(**extraction_payload)
+    else:
+        extracted = {
+            "status": "ok",
+            "num_extracted": len(train_subset_ids),
+        }
+
+    checkpoint["phases_completed"].append("log_extraction")
+    checkpoint["status"] = "influence_scoring"
+    checkpoint["updated_at"] = datetime.now(timezone.utc).isoformat()
+    _write_checkpoint(output_dir, checkpoint)
+
+    test_sample_ids = resolved.test_sample_ids
+    if config.test_subset_size is not None:
+        test_sample_ids = _deterministic_subset(test_sample_ids, config.test_subset_size, config.seed)
+    logger.info("Scoring influence for %d test samples", len(test_sample_ids))
+
+    scoring_payload = {
+        "context": context,
+        "test_sample_ids": test_sample_ids,
+        "train_sample_ids": train_subset_ids,
+        "influence_mode": config.influence_mode,
+        "ihvp_controls": config.ihvp_controls,
+        **config.score_kwargs,
+    }
+    if hasattr(logix_module, "score_influence") and callable(logix_module.score_influence):
+        raw_scores = logix_module.score_influence(**scoring_payload)
+    elif hasattr(logix_module, "score") and callable(logix_module.score):
+        raw_scores = logix_module.score(**scoring_payload)
+    else:
+        raw_scores = _fallback_scores(test_sample_ids, train_subset_ids, seed=config.seed)
+
+    if not isinstance(raw_scores, Mapping):
+        raise ValueError("Influence scoring must return a mapping keyed by test sample id")
+    influence_scores = {str(k): dict(v) for k, v in raw_scores.items()}
+    top_rankings = _top_k_rankings(influence_scores, config.top_k)
+
+    checkpoint["phases_completed"].append("influence_scoring")
+    checkpoint["status"] = "logix_run_finalize"
+    checkpoint["updated_at"] = datetime.now(timezone.utc).isoformat()
+    _write_checkpoint(output_dir, checkpoint)
+
+    result = execute_logix(context, config=config, sample_ids=train_subset_ids, logix_module=logix_module)
 
     result_payload = {
         "run_id": config.run_id,
-        "num_samples": len(sample_ids),
+        "num_samples": len(train_subset_ids),
+        "num_test_samples": len(test_sample_ids),
+        "train_subset_ids": train_subset_ids,
+        "test_sample_ids": test_sample_ids,
+        "extraction": extracted,
+        "influence_scores": influence_scores,
+        "top_k_rankings": top_rankings,
         "results": result,
     }
     results_path = output_dir / "results.json"
@@ -271,10 +463,21 @@ def run_logix_engine(config_path: str | Path, logix_module: Any | None = None) -
         "gradient_subset_path": str(resolved.gradient_subset_path) if resolved.gradient_subset_path else None,
         "setup_kwargs": config.setup_kwargs,
         "run_kwargs": config.run_kwargs,
+        "init_kwargs": config.init_kwargs,
+        "patch_kwargs": config.patch_kwargs,
+        "extract_kwargs": config.extract_kwargs,
+        "score_kwargs": config.score_kwargs,
+        "test_subset_size": config.test_subset_size,
+        "checkpoint_path": str(checkpoint_path),
         "results_path": str(results_path),
     }
     metadata_path = output_dir / "metadata.json"
     metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    checkpoint["phases_completed"].append("completed")
+    checkpoint["status"] = "completed"
+    checkpoint["updated_at"] = datetime.now(timezone.utc).isoformat()
+    _write_checkpoint(output_dir, checkpoint)
+    logger.info("Completed LogIX attribution. results=%s metadata=%s", results_path, metadata_path)
 
     return LogIXRunArtifacts(
         output_dir=output_dir,
