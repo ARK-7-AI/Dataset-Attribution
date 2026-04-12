@@ -85,20 +85,29 @@ def test_logix_engine_writes_results_and_metadata(tmp_path: Path) -> None:
     artifacts = run_logix_engine(config_path, logix_module=_FakeLogIX)
 
     assert artifacts.output_dir.exists()
-    assert artifacts.results_path.exists()
+    assert artifacts.influence_scores_path.exists()
+    assert artifacts.topk_path.exists()
     assert artifacts.metadata_path.exists()
 
-    results = json.loads(artifacts.results_path.read_text(encoding="utf-8"))
-    assert results["run_id"] == "logix-test"
-    assert results["num_samples"] == 4
-    assert results["results"]["status"] == "ok"
-    assert results["results"]["num_ranked"] == 4
+    influence_lines = artifacts.influence_scores_path.read_text(encoding="utf-8").strip().splitlines()
+    assert influence_lines[0] == "test_id,train_id,influence_score,rank"
+    assert len(influence_lines) == 1 + (2 * 4)
+
+    topk = json.loads(artifacts.topk_path.read_text(encoding="utf-8"))
+    assert len(topk) == 2
+    first_test = sorted(topk.keys())[0]
+    assert len(topk[first_test]) == 2
+    assert topk[first_test][0]["rank"] == 1
 
     metadata = json.loads(artifacts.metadata_path.read_text(encoding="utf-8"))
+    assert metadata["run_id"] == "logix-test"
     assert metadata["model_name_or_path"] == "fake-model"
     assert metadata["seed"] == 2026
     assert metadata["top_k"] == 2
     assert metadata["setup_kwargs"]["device"] == "cpu"
+    assert metadata["versions"]["python"]
+    assert metadata["timing"]["total_seconds"] >= 0.0
+    assert metadata["artifacts"]["execute_logix_result"]["status"] == "ok"
 
 
 def test_logix_engine_without_manifest_still_runs(tmp_path: Path) -> None:
@@ -139,9 +148,9 @@ def test_logix_engine_without_manifest_still_runs(tmp_path: Path) -> None:
     )
 
     artifacts = run_logix_engine(config_path, logix_module=_FakeLogIX)
-    results = json.loads(artifacts.results_path.read_text(encoding="utf-8"))
-    assert results["num_samples"] == 3
-    assert results["results"]["top_sample_id"] is not None
+    metadata = json.loads(artifacts.metadata_path.read_text(encoding="utf-8"))
+    assert metadata["artifacts"]["num_samples"] == 3
+    assert metadata["artifacts"]["execute_logix_result"]["top_sample_id"] is not None
 
 
 def test_logix_engine_rejects_invalid_run_id(tmp_path: Path) -> None:

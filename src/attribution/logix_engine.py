@@ -10,7 +10,9 @@ import importlib
 import json
 import logging
 from pathlib import Path
+import platform
 import re
+import time
 from typing import Any, Mapping, Sequence
 
 import yaml
@@ -48,7 +50,8 @@ class LogIXRunArtifacts:
 
     output_dir: Path
     metadata_path: Path
-    results_path: Path
+    influence_scores_path: Path
+    topk_path: Path
 
 
 def build_parser() -> ArgumentParser:
@@ -295,6 +298,47 @@ def _top_k_rankings(scores: Mapping[str, Mapping[str, float]], top_k: int) -> di
     return rankings
 
 
+def _write_influence_scores_csv(
+    output_dir: Path,
+    scores: Mapping[str, Mapping[str, float]],
+) -> Path:
+    rows: list[tuple[str, str, float, int]] = []
+    for test_id, per_train_scores in scores.items():
+        ranked = sorted(per_train_scores.items(), key=lambda item: item[1], reverse=True)
+        for rank, (train_id, influence_score) in enumerate(ranked, start=1):
+            rows.append((str(test_id), str(train_id), float(influence_score), rank))
+
+    rows.sort(key=lambda item: (item[0], item[3], item[1]))
+    csv_path = output_dir / "influence_scores.csv"
+    csv_lines = ["test_id,train_id,influence_score,rank"]
+    csv_lines.extend(
+        f"{test_id},{train_id},{influence_score:.12g},{rank}"
+        for test_id, train_id, influence_score, rank in rows
+    )
+    csv_path.write_text("\n".join(csv_lines) + "\n", encoding="utf-8")
+    return csv_path
+
+
+def _write_topk_json(
+    output_dir: Path,
+    top_rankings: Mapping[str, Sequence[Mapping[str, float | str]]],
+) -> Path:
+    topk_payload: dict[str, list[dict[str, float | str | int]]] = {}
+    for test_id, ranked_examples in top_rankings.items():
+        topk_payload[str(test_id)] = [
+            {
+                "train_id": str(example["sample_id"]),
+                "influence_score": float(example["score"]),
+                "rank": rank,
+            }
+            for rank, example in enumerate(ranked_examples, start=1)
+        ]
+
+    topk_path = output_dir / "topk.json"
+    topk_path.write_text(json.dumps(topk_payload, indent=2), encoding="utf-8")
+    return topk_path
+
+
 def execute_logix(
     context: Any,
     config: LogIXEngineConfig,
@@ -344,10 +388,11 @@ def run_logix_engine(config_path: str | Path, logix_module: Any | None = None) -
         run_id=config.run_id,
         require_gradients=require_gradients,
     )
-    output_dir = resolved.run_root / "logix"
+    output_dir = resolved.run_root / "attribution" / "logix"
     output_dir.mkdir(parents=True, exist_ok=True)
     logger = _setup_runtime_logger(output_dir)
     logger.info("Starting LogIX attribution run_id=%s", config.run_id)
+    run_start = time.perf_counter()
 
     checkpoint: dict[str, Any] = {
         "run_id": config.run_id,
@@ -387,6 +432,7 @@ def run_logix_engine(config_path: str | Path, logix_module: Any | None = None) -
         "lora_only": config.lora_only,
         **config.extract_kwargs,
     }
+    extraction_start = time.perf_counter()
     if hasattr(logix_module, "extract_log") and callable(logix_module.extract_log):
         extracted = logix_module.extract_log(**extraction_payload)
     else:
@@ -394,6 +440,7 @@ def run_logix_engine(config_path: str | Path, logix_module: Any | None = None) -
             "status": "ok",
             "num_extracted": len(train_subset_ids),
         }
+    extraction_elapsed = time.perf_counter() - extraction_start
 
     checkpoint["phases_completed"].append("log_extraction")
     checkpoint["status"] = "influence_scoring"
@@ -413,12 +460,14 @@ def run_logix_engine(config_path: str | Path, logix_module: Any | None = None) -
         "ihvp_controls": config.ihvp_controls,
         **config.score_kwargs,
     }
+    scoring_start = time.perf_counter()
     if hasattr(logix_module, "score_influence") and callable(logix_module.score_influence):
         raw_scores = logix_module.score_influence(**scoring_payload)
     elif hasattr(logix_module, "score") and callable(logix_module.score):
         raw_scores = logix_module.score(**scoring_payload)
     else:
         raw_scores = _fallback_scores(test_sample_ids, train_subset_ids, seed=config.seed)
+    scoring_elapsed = time.perf_counter() - scoring_start
 
     if not isinstance(raw_scores, Mapping):
         raise ValueError("Influence scoring must return a mapping keyed by test sample id")
@@ -430,24 +479,18 @@ def run_logix_engine(config_path: str | Path, logix_module: Any | None = None) -
     checkpoint["updated_at"] = datetime.now(timezone.utc).isoformat()
     _write_checkpoint(output_dir, checkpoint)
 
+    execute_start = time.perf_counter()
     result = execute_logix(context, config=config, sample_ids=train_subset_ids, logix_module=logix_module)
+    execute_elapsed = time.perf_counter() - execute_start
 
-    result_payload = {
-        "run_id": config.run_id,
-        "num_samples": len(train_subset_ids),
-        "num_test_samples": len(test_sample_ids),
-        "train_subset_ids": train_subset_ids,
-        "test_sample_ids": test_sample_ids,
-        "extraction": extracted,
-        "influence_scores": influence_scores,
-        "top_k_rankings": top_rankings,
-        "results": result,
-    }
-    results_path = output_dir / "results.json"
-    results_path.write_text(json.dumps(result_payload, indent=2), encoding="utf-8")
+    influence_scores_path = _write_influence_scores_csv(output_dir, influence_scores)
+    topk_path = _write_topk_json(output_dir, top_rankings)
 
     metadata = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "run_id": config.run_id,
+        "config_path": str(Path(config_path)),
+        "output_dir": str(output_dir),
         "model_name_or_path": config.model_name_or_path,
         "seed": config.seed,
         "top_k": config.top_k,
@@ -469,7 +512,26 @@ def run_logix_engine(config_path: str | Path, logix_module: Any | None = None) -
         "score_kwargs": config.score_kwargs,
         "test_subset_size": config.test_subset_size,
         "checkpoint_path": str(checkpoint_path),
-        "results_path": str(results_path),
+        "influence_scores_path": str(influence_scores_path),
+        "topk_path": str(topk_path),
+        "timing": {
+            "extract_log_seconds": extraction_elapsed,
+            "score_influence_seconds": scoring_elapsed,
+            "execute_logix_seconds": execute_elapsed,
+            "total_seconds": time.perf_counter() - run_start,
+        },
+        "versions": {
+            "python": platform.python_version(),
+            "logix": getattr(logix_module, "__version__", "unknown"),
+        },
+        "artifacts": {
+            "execute_logix_result": result,
+            "num_samples": len(train_subset_ids),
+            "num_test_samples": len(test_sample_ids),
+            "train_subset_ids": train_subset_ids,
+            "test_sample_ids": test_sample_ids,
+            "extraction": extracted,
+        },
     }
     metadata_path = output_dir / "metadata.json"
     metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
@@ -477,12 +539,18 @@ def run_logix_engine(config_path: str | Path, logix_module: Any | None = None) -
     checkpoint["status"] = "completed"
     checkpoint["updated_at"] = datetime.now(timezone.utc).isoformat()
     _write_checkpoint(output_dir, checkpoint)
-    logger.info("Completed LogIX attribution. results=%s metadata=%s", results_path, metadata_path)
+    logger.info(
+        "Completed LogIX attribution. influence_scores=%s topk=%s metadata=%s",
+        influence_scores_path,
+        topk_path,
+        metadata_path,
+    )
 
     return LogIXRunArtifacts(
         output_dir=output_dir,
         metadata_path=metadata_path,
-        results_path=results_path,
+        influence_scores_path=influence_scores_path,
+        topk_path=topk_path,
     )
 
 
