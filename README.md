@@ -259,7 +259,7 @@ bash scripts/run_step1_final_check.sh --run-id <run_id>
   - Step 1 gate has passed for the same run.
   - `logix` Python package is installed (via project dependencies including `logix-ai`).
   - Attribution config exists (default: `configs/attribution_logix.yaml`) and points to valid run artifacts/manifests.
-  - Use the same `run_id` for splits, training artifacts, and attribution unless explicit path overrides are set.
+  - Default behavior uses one `run_id` for splits and training artifacts, but mixed-run layouts are supported when explicit manifest paths are set (for example: training artifacts from `final_report_run` with split CSVs from `default_run`).
 - Exact command:
 
 ```bash
