@@ -26,12 +26,12 @@ class _FakeLogIX:
         }
 
 
-def _write_train_manifest(path: Path, count: int) -> None:
+def _write_manifest(path: Path, count: int, start: int = 0) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=["sample_id", "source", "license"])
         writer.writeheader()
-        for idx in range(count):
+        for idx in range(start, start + count):
             writer.writerow(
                 {
                     "sample_id": f"sample-{idx:05d}",
@@ -43,10 +43,13 @@ def _write_train_manifest(path: Path, count: int) -> None:
 
 def test_logix_engine_writes_results_and_metadata(tmp_path: Path) -> None:
     run_root = tmp_path / "outputs" / "runs" / "logix-test"
-    train_manifest_path = run_root / "splits" / "train.csv"
     adapter_dir = run_root / "train" / "adapter"
+    tokenizer_dir = run_root / "train" / "tokenizer"
     adapter_dir.mkdir(parents=True, exist_ok=True)
-    _write_train_manifest(train_manifest_path, count=4)
+    tokenizer_dir.mkdir(parents=True, exist_ok=True)
+    (tokenizer_dir / "tokenizer.json").write_text("{}", encoding="utf-8")
+    _write_manifest(run_root / "splits" / "train.csv", count=4, start=0)
+    _write_manifest(run_root / "splits" / "test.csv", count=2, start=100)
 
     config_path = tmp_path / "attribution_logix.yaml"
     config_path.write_text(
@@ -58,7 +61,6 @@ def test_logix_engine_writes_results_and_metadata(tmp_path: Path) -> None:
                 "seed": 2026,
                 "top_k": 2,
                 "train_subset_size": 4,
-                "train_manifest_path": str(train_manifest_path),
                 "influence": {
                     "mode": "ihvp",
                     "ihvp": {
@@ -70,7 +72,6 @@ def test_logix_engine_writes_results_and_metadata(tmp_path: Path) -> None:
                 },
                 "lora": {
                     "lora_only": True,
-                    "adapter_path": str(adapter_dir),
                 },
                 "logix": {
                     "setup": {"device": "cpu"},
@@ -101,15 +102,20 @@ def test_logix_engine_writes_results_and_metadata(tmp_path: Path) -> None:
 
 
 def test_logix_engine_without_manifest_still_runs(tmp_path: Path) -> None:
-    run_root = tmp_path / "outputs" / "runs" / "logix-no-manifest"
+    run_root = tmp_path / "outputs" / "runs" / "logix-with-default-splits"
     adapter_dir = run_root / "train" / "adapter"
+    tokenizer_dir = run_root / "train" / "tokenizer"
     adapter_dir.mkdir(parents=True, exist_ok=True)
+    tokenizer_dir.mkdir(parents=True, exist_ok=True)
+    (tokenizer_dir / "tokenizer.json").write_text("{}", encoding="utf-8")
+    _write_manifest(run_root / "splits" / "train.csv", count=3, start=0)
+    _write_manifest(run_root / "splits" / "test.csv", count=2, start=100)
 
     config_path = tmp_path / "attribution_logix_nomani.yaml"
     config_path.write_text(
         yaml.safe_dump(
             {
-                "run_id": "logix-no-manifest",
+                "run_id": "logix-with-default-splits",
                 "output_root": str(tmp_path / "outputs" / "runs"),
                 "model_name_or_path": "fake-model",
                 "top_k": 2,
@@ -125,7 +131,6 @@ def test_logix_engine_without_manifest_still_runs(tmp_path: Path) -> None:
                 },
                 "lora": {
                     "lora_only": True,
-                    "adapter_path": str(adapter_dir),
                 },
                 "logix": {"setup": {}, "run": {}},
             }
@@ -135,8 +140,8 @@ def test_logix_engine_without_manifest_still_runs(tmp_path: Path) -> None:
 
     artifacts = run_logix_engine(config_path, logix_module=_FakeLogIX)
     results = json.loads(artifacts.results_path.read_text(encoding="utf-8"))
-    assert results["num_samples"] == 0
-    assert results["results"]["top_sample_id"] is None
+    assert results["num_samples"] == 3
+    assert results["results"]["top_sample_id"] is not None
 
 
 def test_logix_engine_rejects_invalid_run_id(tmp_path: Path) -> None:
@@ -197,7 +202,7 @@ def test_logix_engine_rejects_unsupported_influence_mode(tmp_path: Path) -> None
         raise AssertionError("Expected ValueError for unsupported influence mode")
 
 
-def test_logix_engine_rejects_missing_adapter_path_for_lora_only(tmp_path: Path) -> None:
+def test_logix_engine_rejects_missing_train_artifacts_for_lora_only(tmp_path: Path) -> None:
     config_path = tmp_path / "attribution_logix_missing_adapter.yaml"
     config_path.write_text(
         yaml.safe_dump(
@@ -217,7 +222,6 @@ def test_logix_engine_rejects_missing_adapter_path_for_lora_only(tmp_path: Path)
                 },
                 "lora": {
                     "lora_only": True,
-                    "adapter_path": str(tmp_path / "missing_adapter"),
                 },
                 "logix": {"setup": {}, "run": {}},
             }
@@ -228,6 +232,6 @@ def test_logix_engine_rejects_missing_adapter_path_for_lora_only(tmp_path: Path)
     try:
         run_logix_engine(config_path, logix_module=_FakeLogIX)
     except FileNotFoundError as exc:
-        assert "LoRA adapter path not found" in str(exc)
+        assert "Adapter artifact not found" in str(exc)
     else:
         raise AssertionError("Expected FileNotFoundError for missing adapter path")

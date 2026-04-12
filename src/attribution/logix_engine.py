@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from argparse import ArgumentParser, Namespace
-import csv
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import importlib
@@ -13,6 +12,8 @@ import re
 from typing import Any, Mapping, Sequence
 
 import yaml
+
+from src.attribution.input_resolver import resolve_attribution_inputs
 
 
 @dataclass(frozen=True)
@@ -29,7 +30,7 @@ class LogIXEngineConfig:
     ihvp_controls: dict[str, float | int]
     lora_only: bool
     lora_adapter_path: Path | None
-    train_manifest_path: Path | None
+    tokenizer_path: Path | None
     setup_kwargs: dict[str, Any]
     run_kwargs: dict[str, Any]
 
@@ -120,11 +121,6 @@ def _load_config(config_path: str | Path) -> LogIXEngineConfig:
     lora_only = bool(lora_cfg.get("lora_only", True))
     adapter_path_raw = lora_cfg.get("adapter_path")
     lora_adapter_path = Path(str(adapter_path_raw)) if adapter_path_raw else None
-    if lora_only:
-        if lora_adapter_path is None:
-            raise ValueError("lora.adapter_path is required when lora.lora_only is true")
-        if not lora_adapter_path.exists():
-            raise FileNotFoundError(f"LoRA adapter path not found: {lora_adapter_path}")
 
     logix_cfg = raw.get("logix", {})
     if logix_cfg is None:
@@ -139,11 +135,6 @@ def _load_config(config_path: str | Path) -> LogIXEngineConfig:
     if not isinstance(run_kwargs, dict):
         raise ValueError("logix.run must be a mapping")
 
-    train_manifest = raw.get("train_manifest_path")
-    train_manifest_path = Path(train_manifest) if train_manifest else None
-    if train_manifest_path is not None and not train_manifest_path.exists():
-        raise FileNotFoundError(f"Train split manifest not found: {train_manifest_path}")
-
     return LogIXEngineConfig(
         run_id=run_id,
         output_root=output_root,
@@ -155,7 +146,7 @@ def _load_config(config_path: str | Path) -> LogIXEngineConfig:
         ihvp_controls=ihvp_controls,
         lora_only=lora_only,
         lora_adapter_path=lora_adapter_path,
-        train_manifest_path=train_manifest_path,
+        tokenizer_path=None,
         setup_kwargs={str(k): v for k, v in setup_kwargs.items()},
         run_kwargs={str(k): v for k, v in run_kwargs.items()},
     )
@@ -169,19 +160,6 @@ def _import_logix_module() -> Any:
             "Unable to import 'logix'. Install project dependencies to include the official "
             "LogIX package (logix-ai)."
         ) from exc
-
-
-def _read_train_sample_ids(train_manifest_path: Path | None) -> list[str]:
-    if train_manifest_path is None:
-        return []
-    if not train_manifest_path.exists():
-        raise FileNotFoundError(f"Train split manifest not found: {train_manifest_path}")
-
-    with train_manifest_path.open("r", encoding="utf-8", newline="") as handle:
-        reader = csv.DictReader(handle)
-        if "sample_id" not in (reader.fieldnames or []):
-            raise ValueError("Train manifest must include sample_id column")
-        return [row["sample_id"] for row in reader if row.get("sample_id")]
 
 
 def setup_logix(
@@ -248,11 +226,23 @@ def run_logix_engine(config_path: str | Path, logix_module: Any | None = None) -
     if logix_module is None:
         logix_module = _import_logix_module()
 
-    run_root = config.output_root / config.run_id
-    output_dir = run_root / "logix"
+    require_gradients = config.influence_mode in {"gradient_similarity", "trak"}
+    resolved = resolve_attribution_inputs(
+        output_root=config.output_root,
+        run_id=config.run_id,
+        require_gradients=require_gradients,
+    )
+    output_dir = resolved.run_root / "logix"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    sample_ids = _read_train_sample_ids(config.train_manifest_path)
+    sample_ids = resolved.train_sample_ids
+    config = LogIXEngineConfig(
+        **{
+            **config.__dict__,
+            "lora_adapter_path": resolved.adapter_artifact,
+            "tokenizer_path": resolved.tokenizer_artifact,
+        }
+    )
     context = setup_logix(config, output_dir=output_dir, logix_module=logix_module)
     result = execute_logix(context, config=config, sample_ids=sample_ids, logix_module=logix_module)
 
@@ -274,7 +264,11 @@ def run_logix_engine(config_path: str | Path, logix_module: Any | None = None) -
         "ihvp_controls": config.ihvp_controls,
         "lora_only": config.lora_only,
         "lora_adapter_path": str(config.lora_adapter_path) if config.lora_adapter_path else None,
-        "train_manifest_path": str(config.train_manifest_path) if config.train_manifest_path else None,
+        "train_manifest_path": str(resolved.train_split_path),
+        "test_manifest_path": str(resolved.test_split_path),
+        "tokenizer_path": str(config.tokenizer_path) if config.tokenizer_path else None,
+        "sample_id_mapping_size": len(resolved.sample_id_to_train_index),
+        "gradient_subset_path": str(resolved.gradient_subset_path) if resolved.gradient_subset_path else None,
         "setup_kwargs": config.setup_kwargs,
         "run_kwargs": config.run_kwargs,
         "results_path": str(results_path),
