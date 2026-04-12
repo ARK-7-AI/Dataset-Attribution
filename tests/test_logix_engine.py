@@ -355,6 +355,63 @@ def test_logix_engine_supports_split_path_overrides(tmp_path: Path) -> None:
     assert metadata["test_manifest_path_override"].endswith("split-source/splits/test.csv")
 
 
+def test_logix_engine_mixed_run_layout_uses_explicit_manifest_paths(tmp_path: Path) -> None:
+    final_report_root = tmp_path / "outputs" / "runs" / "final_report_run"
+    (final_report_root / "train" / "adapter").mkdir(parents=True, exist_ok=True)
+    (final_report_root / "train" / "tokenizer").mkdir(parents=True, exist_ok=True)
+    (final_report_root / "train" / "tokenizer" / "tokenizer.json").write_text("{}", encoding="utf-8")
+
+    default_split_root = tmp_path / "outputs" / "runs" / "default_run"
+    _write_manifest(default_split_root / "splits" / "train.csv", count=3, start=0)
+    _write_manifest(default_split_root / "splits" / "test.csv", count=2, start=100)
+
+    config_path = tmp_path / "attribution_logix_mixed_run.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "run_id": "final_report_run",
+                "output_root": str(tmp_path / "outputs" / "runs"),
+                "top_k": 2,
+                "train_subset_size": 3,
+                "train_manifest_path": "outputs/runs/default_run/splits/train.csv",
+                "test_manifest_path": "outputs/runs/default_run/splits/test.csv",
+                "shadow_manifest_path": "outputs/runs/default_run/splits/shadow.csv",
+                "influence": {
+                    "mode": "ihvp",
+                    "ihvp": {
+                        "damping": 0.01,
+                        "scale": 10.0,
+                        "recursion_depth": 8,
+                        "num_samples": 1,
+                    },
+                },
+                "lora": {
+                    "lora_only": True,
+                    "adapter_path": "outputs/runs/final_report_run/train/adapter",
+                },
+                "logix": {"setup": {}, "run": {}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cwd = Path.cwd()
+    try:
+        # Config paths in this regression use repo-relative paths.
+        import os
+
+        os.chdir(tmp_path)
+        artifacts = run_logix_engine(config_path, logix_module=_FakeLogIX)
+    finally:
+        os.chdir(cwd)
+
+    metadata = json.loads(artifacts.metadata_path.read_text(encoding="utf-8"))
+    assert metadata["train_manifest_path"] == "outputs/runs/default_run/splits/train.csv"
+    assert metadata["test_manifest_path"] == "outputs/runs/default_run/splits/test.csv"
+    assert metadata["train_manifest_path_override"] == "outputs/runs/default_run/splits/train.csv"
+    assert metadata["test_manifest_path_override"] == "outputs/runs/default_run/splits/test.csv"
+
+
 def test_logix_engine_tiny_smoke_flow_is_deterministic(tmp_path: Path) -> None:
     output_root = tmp_path / "outputs" / "runs"
     run_id = "smoke-flow"

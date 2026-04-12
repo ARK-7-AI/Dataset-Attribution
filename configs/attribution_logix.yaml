@@ -1,4 +1,4 @@
-run_id: default_run
+run_id: final_report_run
 output_root: outputs/runs
 model_name_or_path: llama3.2:3b
 seed: 2026
@@ -7,8 +7,9 @@ train_subset_size: 600
 
 # Optional split-path overrides for mixed-run setups.
 # Leave unset/null to use output_root/run_id/splits/{train,test}.csv.
-train_manifest_path:
-test_manifest_path:
+train_manifest_path: outputs/runs/default_run/splits/train.csv
+test_manifest_path: outputs/runs/default_run/splits/test.csv
+shadow_manifest_path: outputs/runs/default_run/splits/shadow.csv
 
 influence:
   mode: ihvp
@@ -20,7 +21,7 @@ influence:
 
 lora:
   lora_only: true
-  adapter_path: outputs/runs/default_run/train/adapter
+  adapter_path: outputs/runs/final_report_run/train/adapter
 
 logix:
   setup: {}
