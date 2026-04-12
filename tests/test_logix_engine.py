@@ -106,6 +106,17 @@ def test_logix_engine_writes_results_and_metadata(tmp_path: Path) -> None:
     assert metadata["top_k"] == 2
     assert metadata["setup_kwargs"]["device"] == "cpu"
     assert metadata["versions"]["python"]
+    assert "logix" in metadata["versions"]
+    assert "transformers" in metadata["versions"]
+    assert "torch" in metadata["versions"]
+    assert metadata["timing"]["setup_seconds"] >= 0.0
+    assert metadata["timing"]["phase_timings_seconds"]["setup"] >= 0.0
+    assert metadata["timing"]["phase_timings_seconds"]["extraction"] >= 0.0
+    assert metadata["timing"]["phase_timings_seconds"]["influence_scoring"] >= 0.0
+    assert "platform" in metadata["hardware"]
+    assert "cuda_available" in metadata["hardware"]
+    assert "git_commit_hash" in metadata["git"]
+    assert "git_dirty" in metadata["git"]
     assert metadata["timing"]["total_seconds"] >= 0.0
     assert metadata["artifacts"]["execute_logix_result"]["status"] == "ok"
 

@@ -12,6 +12,7 @@ import logging
 from pathlib import Path
 import platform
 import re
+import subprocess
 import time
 from typing import Any, Mapping, Sequence
 
@@ -193,6 +194,77 @@ def _import_logix_module() -> Any:
             "Unable to import 'logix'. Install project dependencies to include the official "
             "LogIX package (logix-ai)."
         ) from exc
+
+
+def _resolve_package_version(module_name: str) -> str:
+    """Resolve package version for optional runtime dependencies."""
+    try:
+        module = importlib.import_module(module_name)
+    except Exception:
+        return "unknown"
+    return str(getattr(module, "__version__", "unknown"))
+
+
+def _detect_hardware_context() -> dict[str, Any]:
+    """Capture basic host and accelerator metadata for auditability."""
+    hardware: dict[str, Any] = {
+        "platform": platform.platform(),
+        "machine": platform.machine(),
+        "processor": platform.processor() or "unknown",
+    }
+
+    try:
+        torch_module = importlib.import_module("torch")
+    except Exception:
+        hardware["torch_available"] = False
+        hardware["cuda_available"] = False
+        return hardware
+
+    hardware["torch_available"] = True
+    cuda_module = getattr(torch_module, "cuda", None)
+    cuda_available = bool(cuda_module and cuda_module.is_available())
+    hardware["cuda_available"] = cuda_available
+    hardware["torch_cuda_version"] = str(getattr(getattr(torch_module, "version", object()), "cuda", "unknown"))
+    if not cuda_available:
+        hardware["cuda_device_count"] = 0
+        hardware["cuda_devices"] = []
+        return hardware
+
+    device_count = int(cuda_module.device_count())
+    devices: list[dict[str, Any]] = []
+    for index in range(device_count):
+        try:
+            device_name = str(cuda_module.get_device_name(index))
+        except Exception:
+            device_name = "unknown"
+        devices.append({"index": index, "name": device_name})
+    hardware["cuda_device_count"] = device_count
+    hardware["cuda_devices"] = devices
+    return hardware
+
+
+def _resolve_git_metadata() -> dict[str, Any]:
+    """Resolve git commit hash and dirty state for repository provenance."""
+    try:
+        commit_hash = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            stderr=subprocess.STDOUT,
+            text=True,
+        ).strip()
+    except Exception:
+        return {"git_commit_hash": "unknown", "git_dirty": None}
+
+    try:
+        status_output = subprocess.check_output(
+            ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        dirty = bool(status_output.strip())
+    except Exception:
+        dirty = None
+
+    return {"git_commit_hash": commit_hash, "git_dirty": dirty}
 
 
 def setup_logix(
@@ -393,6 +465,7 @@ def run_logix_engine(config_path: str | Path, logix_module: Any | None = None) -
     logger = _setup_runtime_logger(output_dir)
     logger.info("Starting LogIX attribution run_id=%s", config.run_id)
     run_start = time.perf_counter()
+    setup_start = time.perf_counter()
 
     checkpoint: dict[str, Any] = {
         "run_id": config.run_id,
@@ -417,6 +490,7 @@ def run_logix_engine(config_path: str | Path, logix_module: Any | None = None) -
     _write_checkpoint(output_dir, checkpoint)
 
     trainer_patched = _patch_trainer_for_logix(logix_module=logix_module, context=context, config=config, logger=logger)
+    setup_elapsed = time.perf_counter() - setup_start
     checkpoint["phases_completed"].append("trainer_patch")
     checkpoint["trainer_patched"] = trainer_patched
     checkpoint["status"] = "log_extraction"
@@ -515,15 +589,25 @@ def run_logix_engine(config_path: str | Path, logix_module: Any | None = None) -
         "influence_scores_path": str(influence_scores_path),
         "topk_path": str(topk_path),
         "timing": {
+            "setup_seconds": setup_elapsed,
             "extract_log_seconds": extraction_elapsed,
             "score_influence_seconds": scoring_elapsed,
             "execute_logix_seconds": execute_elapsed,
             "total_seconds": time.perf_counter() - run_start,
+            "phase_timings_seconds": {
+                "setup": setup_elapsed,
+                "extraction": extraction_elapsed,
+                "influence_scoring": scoring_elapsed,
+            },
         },
         "versions": {
             "python": platform.python_version(),
             "logix": getattr(logix_module, "__version__", "unknown"),
+            "transformers": _resolve_package_version("transformers"),
+            "torch": _resolve_package_version("torch"),
         },
+        "hardware": _detect_hardware_context(),
+        "git": _resolve_git_metadata(),
         "artifacts": {
             "execute_logix_result": result,
             "num_samples": len(train_subset_ids),
