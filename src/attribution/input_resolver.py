@@ -30,6 +30,8 @@ def resolve_attribution_inputs(
     output_root: Path,
     run_id: str,
     require_gradients: bool,
+    train_split_path_override: Path | None = None,
+    test_split_path_override: Path | None = None,
 ) -> AttributionInputs:
     """Resolve run inputs and validate cross-stage sample-id consistency."""
 
@@ -40,8 +42,8 @@ def resolve_attribution_inputs(
     tokenizer_artifact = _resolve_tokenizer_artifact(train_dir)
 
     splits_dir = run_root / "splits"
-    train_split_path = splits_dir / "train.csv"
-    test_split_path = splits_dir / "test.csv"
+    train_split_path = train_split_path_override or (splits_dir / "train.csv")
+    test_split_path = test_split_path_override or (splits_dir / "test.csv")
     train_sample_ids = _read_split_ids(train_split_path, split_name="train")
     test_sample_ids = _read_split_ids(test_split_path, split_name="test")
 

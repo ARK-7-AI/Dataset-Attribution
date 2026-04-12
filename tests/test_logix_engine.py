@@ -223,6 +223,12 @@ def test_logix_engine_rejects_unsupported_influence_mode(tmp_path: Path) -> None
 
 
 def test_logix_engine_rejects_missing_train_artifacts_for_lora_only(tmp_path: Path) -> None:
+    run_root = tmp_path / "outputs" / "runs" / "logix-test"
+    (run_root / "train" / "tokenizer").mkdir(parents=True, exist_ok=True)
+    (run_root / "train" / "tokenizer" / "tokenizer.json").write_text("{}", encoding="utf-8")
+    _write_manifest(run_root / "splits" / "train.csv", count=2, start=0)
+    _write_manifest(run_root / "splits" / "test.csv", count=1, start=100)
+
     config_path = tmp_path / "attribution_logix_missing_adapter.yaml"
     config_path.write_text(
         yaml.safe_dump(
@@ -252,9 +258,101 @@ def test_logix_engine_rejects_missing_train_artifacts_for_lora_only(tmp_path: Pa
     try:
         run_logix_engine(config_path, logix_module=_FakeLogIX)
     except FileNotFoundError as exc:
-        assert "Adapter artifact not found" in str(exc)
+        assert "LoRA adapter artifacts" in str(exc)
     else:
         raise AssertionError("Expected FileNotFoundError for missing adapter path")
+
+
+def test_logix_engine_preflight_reports_run_id_mismatch_with_fix_hint(tmp_path: Path) -> None:
+    valid_run_root = tmp_path / "outputs" / "runs" / "aligned-run"
+    (valid_run_root / "train" / "adapter").mkdir(parents=True, exist_ok=True)
+    (valid_run_root / "train" / "tokenizer").mkdir(parents=True, exist_ok=True)
+    (valid_run_root / "train" / "tokenizer" / "tokenizer.json").write_text("{}", encoding="utf-8")
+    _write_manifest(valid_run_root / "splits" / "train.csv", count=3, start=0)
+    _write_manifest(valid_run_root / "splits" / "test.csv", count=2, start=100)
+
+    config_path = tmp_path / "attribution_logix_bad_run_linkage.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "run_id": "wrong-run",
+                "output_root": str(tmp_path / "outputs" / "runs"),
+                "top_k": 1,
+                "train_subset_size": 1,
+                "influence": {
+                    "mode": "ihvp",
+                    "ihvp": {
+                        "damping": 0.01,
+                        "scale": 10.0,
+                        "recursion_depth": 8,
+                        "num_samples": 1,
+                    },
+                },
+                "lora": {
+                    "lora_only": True,
+                },
+                "logix": {"setup": {}, "run": {}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        run_logix_engine(config_path, logix_module=_FakeLogIX)
+    except FileNotFoundError as exc:
+        message = str(exc)
+        assert "selected run_id='wrong-run'" in message
+        assert "train split manifest" in message
+        assert "test split manifest" in message
+        assert "LoRA adapter artifacts" in message
+        assert "same run_id for splits, training artifacts, and attribution" in message
+        assert "train_manifest_path/test_manifest_path overrides" in message
+    else:
+        raise AssertionError("Expected preflight mismatch error for run_id with missing inputs")
+
+
+def test_logix_engine_supports_split_path_overrides(tmp_path: Path) -> None:
+    split_run_root = tmp_path / "outputs" / "runs" / "split-source"
+    _write_manifest(split_run_root / "splits" / "train.csv", count=3, start=0)
+    _write_manifest(split_run_root / "splits" / "test.csv", count=2, start=100)
+
+    artifact_run_root = tmp_path / "outputs" / "runs" / "artifact-source"
+    (artifact_run_root / "train" / "adapter").mkdir(parents=True, exist_ok=True)
+    (artifact_run_root / "train" / "tokenizer").mkdir(parents=True, exist_ok=True)
+    (artifact_run_root / "train" / "tokenizer" / "tokenizer.json").write_text("{}", encoding="utf-8")
+
+    config_path = tmp_path / "attribution_logix_override.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "run_id": "artifact-source",
+                "output_root": str(tmp_path / "outputs" / "runs"),
+                "top_k": 1,
+                "train_subset_size": 2,
+                "train_manifest_path": str(split_run_root / "splits" / "train.csv"),
+                "test_manifest_path": str(split_run_root / "splits" / "test.csv"),
+                "influence": {
+                    "mode": "ihvp",
+                    "ihvp": {
+                        "damping": 0.01,
+                        "scale": 10.0,
+                        "recursion_depth": 8,
+                        "num_samples": 1,
+                    },
+                },
+                "lora": {"lora_only": True},
+                "logix": {"setup": {}, "run": {}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    artifacts = run_logix_engine(config_path, logix_module=_FakeLogIX)
+    metadata = json.loads(artifacts.metadata_path.read_text(encoding="utf-8"))
+    assert metadata["train_manifest_path"].endswith("split-source/splits/train.csv")
+    assert metadata["test_manifest_path"].endswith("split-source/splits/test.csv")
+    assert metadata["train_manifest_path_override"].endswith("split-source/splits/train.csv")
+    assert metadata["test_manifest_path_override"].endswith("split-source/splits/test.csv")
 
 
 def test_logix_engine_tiny_smoke_flow_is_deterministic(tmp_path: Path) -> None:
