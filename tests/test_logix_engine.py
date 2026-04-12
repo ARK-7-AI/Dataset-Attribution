@@ -244,3 +244,78 @@ def test_logix_engine_rejects_missing_train_artifacts_for_lora_only(tmp_path: Pa
         assert "Adapter artifact not found" in str(exc)
     else:
         raise AssertionError("Expected FileNotFoundError for missing adapter path")
+
+
+def test_logix_engine_tiny_smoke_flow_is_deterministic(tmp_path: Path) -> None:
+    output_root = tmp_path / "outputs" / "runs"
+    run_id = "smoke-flow"
+    run_root = output_root / run_id
+    adapter_dir = run_root / "train" / "adapter"
+    tokenizer_dir = run_root / "train" / "tokenizer"
+    adapter_dir.mkdir(parents=True, exist_ok=True)
+    tokenizer_dir.mkdir(parents=True, exist_ok=True)
+    (tokenizer_dir / "tokenizer.json").write_text("{}", encoding="utf-8")
+
+    # Tiny sample manifests to keep this as a smoke flow.
+    _write_manifest(run_root / "splits" / "train.csv", count=3, start=0)
+    _write_manifest(run_root / "splits" / "test.csv", count=2, start=100)
+
+    config_payload = {
+        "run_id": run_id,
+        "output_root": str(output_root),
+        "model_name_or_path": "fake-model",
+        "seed": 1337,
+        "top_k": 2,
+        "train_subset_size": 3,
+        "influence": {
+            "mode": "ihvp",
+            "ihvp": {
+                "damping": 0.01,
+                "scale": 10.0,
+                "recursion_depth": 4,
+                "num_samples": 1,
+            },
+        },
+        "lora": {"lora_only": True},
+        "logix": {
+            "setup": {"device": "cpu"},
+            "run": {},
+            "test_subset_size": 2,
+        },
+    }
+    config_path = tmp_path / "attribution_logix_smoke.yaml"
+    config_path.write_text(yaml.safe_dump(config_payload), encoding="utf-8")
+
+    first = run_logix_engine(config_path, logix_module=_FakeLogIX)
+    second = run_logix_engine(config_path, logix_module=_FakeLogIX)
+
+    expected_output_dir = output_root / run_id / "attribution" / "logix"
+    assert first.output_dir == expected_output_dir
+    assert first.metadata_path == expected_output_dir / "metadata.json"
+    assert first.influence_scores_path == expected_output_dir / "influence_scores.csv"
+    assert first.topk_path == expected_output_dir / "topk.json"
+
+    assert first.metadata_path.exists()
+    assert first.influence_scores_path.exists()
+    assert first.topk_path.exists()
+
+    csv_lines = first.influence_scores_path.read_text(encoding="utf-8").strip().splitlines()
+    assert csv_lines
+    assert csv_lines[0] == "test_id,train_id,influence_score,rank"
+    assert len(csv_lines) > 1
+
+    topk = json.loads(first.topk_path.read_text(encoding="utf-8"))
+    assert topk
+    for test_id, ranking in topk.items():
+        assert test_id
+        assert ranking
+        assert all("train_id" in item and "influence_score" in item and "rank" in item for item in ranking)
+
+    # Fixed seed/config should always produce the same ordering for train subset and rankings.
+    metadata_first = json.loads(first.metadata_path.read_text(encoding="utf-8"))
+    metadata_second = json.loads(second.metadata_path.read_text(encoding="utf-8"))
+    assert metadata_first["artifacts"]["train_subset_ids"] == metadata_second["artifacts"]["train_subset_ids"]
+    assert first.influence_scores_path.read_text(encoding="utf-8") == second.influence_scores_path.read_text(
+        encoding="utf-8"
+    )
+    assert first.topk_path.read_text(encoding="utf-8") == second.topk_path.read_text(encoding="utf-8")
