@@ -178,9 +178,23 @@ def _load_config(config_path: str | Path) -> LogIXEngineConfig:
         if test_subset_size <= 0:
             raise ValueError("logix.test_subset_size must be a positive integer when provided")
 
+    top_level_project = raw.get("project_name")
+    nested_project = logix_cfg.get("project")
+    if top_level_project is not None:
+        resolved_project = str(top_level_project)
+    elif nested_project is not None:
+        resolved_project = str(nested_project)
+    else:
+        resolved_project = "dataset_attribution"
+    if not resolved_project.strip():
+        raise ValueError(
+            "Invalid project configuration: resolved LogIX project is empty. "
+            "Set either top-level `project_name` or nested `logix.project` to a non-empty value."
+        )
+
     return LogIXEngineConfig(
         run_id=run_id,
-        project_name=str(raw.get("project_name", "dataset-attribution")),
+        project_name=resolved_project,
         output_root=output_root,
         model_name_or_path=str(raw.get("model_name_or_path", "unknown-model")),
         seed=int(raw.get("seed", 42)),
@@ -213,6 +227,7 @@ def _build_logix_init_payload(config: LogIXEngineConfig) -> dict[str, Any]:
         "influence_mode": config.influence_mode,
     }
     payload: dict[str, Any] = {
+        "project": config.project_name,
         "project_name": config.project_name,
         "run_name": config.run_id,
         "run_id": config.run_id,
@@ -242,7 +257,14 @@ def _ensure_logix_initialized(config: LogIXEngineConfig, logix_module: Any, logg
             parameter.kind is inspect.Parameter.VAR_KEYWORD
             for parameter in signature.parameters.values()
         )
-        init_kwargs = payload if accepts_var_kwargs else {k: v for k, v in payload.items() if k in signature.parameters}
+        if accepts_var_kwargs:
+            init_kwargs = payload
+        else:
+            init_kwargs = {k: v for k, v in payload.items() if k in signature.parameters}
+        if "project" not in init_kwargs:
+            raise RuntimeError(
+                "Failed to initialize LogIX: installed `logix.init(...)` does not accept required `project` argument."
+            )
         init_fn(**init_kwargs)
     except Exception as exc:
         raise RuntimeError(
@@ -604,6 +626,9 @@ def run_logix_engine(config_path: str | Path, logix_module: Any | None = None) -
     output_dir.mkdir(parents=True, exist_ok=True)
     logger = _setup_runtime_logger(output_dir)
     logger.info("Starting LogIX attribution run_id=%s", config.run_id)
+    print(f"[startup] effective project: {config.project_name}")
+    print(f"[startup] effective run_id: {config.run_id}")
+    logger.info("Effective LogIX project=%s run_id=%s", config.project_name, config.run_id)
     run_start = time.perf_counter()
     setup_start = time.perf_counter()
 

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import yaml
 
-from src.attribution.logix_engine import run_logix_engine
+from src.attribution.logix_engine import _INITIALIZED_LOGIX_MODULE_IDS, run_logix_engine
 
 
 class _FakeLogIX:
@@ -32,10 +32,12 @@ class _FakeLogIX:
 
 class _OrderedLogIX:
     events: list[str] = []
+    init_payload: dict[str, object] = {}
 
     @classmethod
     def init(cls, **kwargs):
         cls.events.append("init")
+        cls.init_payload = dict(kwargs)
         return kwargs
 
     @classmethod
@@ -535,6 +537,8 @@ def test_logix_engine_tiny_smoke_flow_is_deterministic(tmp_path: Path) -> None:
 
 def test_logix_engine_initializes_logix_before_downstream_calls(tmp_path: Path) -> None:
     _OrderedLogIX.events = []
+    _OrderedLogIX.init_payload = {}
+    _INITIALIZED_LOGIX_MODULE_IDS.clear()
     run_root = tmp_path / "outputs" / "runs" / "ordered-run"
     (run_root / "train" / "adapter").mkdir(parents=True, exist_ok=True)
     (run_root / "train" / "tokenizer").mkdir(parents=True, exist_ok=True)
@@ -569,6 +573,7 @@ def test_logix_engine_initializes_logix_before_downstream_calls(tmp_path: Path) 
 
     run_logix_engine(config_path, logix_module=_OrderedLogIX)
     assert "init" in _OrderedLogIX.events
+    assert _OrderedLogIX.init_payload["project"] == "ordered-project"
     init_index = _OrderedLogIX.events.index("init")
     assert init_index < _OrderedLogIX.events.index("setup")
     assert init_index < _OrderedLogIX.events.index("extract_log")
@@ -615,3 +620,122 @@ def test_logix_engine_fails_with_explicit_error_when_logix_init_is_unavailable(t
         assert "incompatible LogIX version" in str(exc)
     else:
         raise AssertionError("Expected RuntimeError when logix.init is unavailable")
+
+
+def test_logix_engine_resolves_project_from_nested_logix_project(tmp_path: Path) -> None:
+    _OrderedLogIX.events = []
+    _OrderedLogIX.init_payload = {}
+    _INITIALIZED_LOGIX_MODULE_IDS.clear()
+    run_root = tmp_path / "outputs" / "runs" / "nested-project-run"
+    (run_root / "train" / "adapter").mkdir(parents=True, exist_ok=True)
+    (run_root / "train" / "tokenizer").mkdir(parents=True, exist_ok=True)
+    (run_root / "train" / "tokenizer" / "tokenizer.json").write_text("{}", encoding="utf-8")
+    _write_manifest(run_root / "splits" / "train.csv", count=2, start=0)
+    _write_manifest(run_root / "splits" / "test.csv", count=1, start=100)
+
+    config_path = tmp_path / "attribution_logix_nested_project.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "run_id": "nested-project-run",
+                "output_root": str(tmp_path / "outputs" / "runs"),
+                "top_k": 1,
+                "train_subset_size": 2,
+                "influence": {
+                    "mode": "ihvp",
+                    "ihvp": {
+                        "damping": 0.01,
+                        "scale": 10.0,
+                        "recursion_depth": 8,
+                        "num_samples": 1,
+                    },
+                },
+                "lora": {"lora_only": True},
+                "logix": {"project": "nested-project", "setup": {}, "run": {}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    run_logix_engine(config_path, logix_module=_OrderedLogIX)
+    assert _OrderedLogIX.init_payload["project"] == "nested-project"
+
+
+def test_logix_engine_uses_default_project_when_project_is_absent(tmp_path: Path) -> None:
+    _OrderedLogIX.events = []
+    _OrderedLogIX.init_payload = {}
+    _INITIALIZED_LOGIX_MODULE_IDS.clear()
+    run_root = tmp_path / "outputs" / "runs" / "default-project-run"
+    (run_root / "train" / "adapter").mkdir(parents=True, exist_ok=True)
+    (run_root / "train" / "tokenizer").mkdir(parents=True, exist_ok=True)
+    (run_root / "train" / "tokenizer" / "tokenizer.json").write_text("{}", encoding="utf-8")
+    _write_manifest(run_root / "splits" / "train.csv", count=2, start=0)
+    _write_manifest(run_root / "splits" / "test.csv", count=1, start=100)
+
+    config_path = tmp_path / "attribution_logix_default_project.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "run_id": "default-project-run",
+                "output_root": str(tmp_path / "outputs" / "runs"),
+                "top_k": 1,
+                "train_subset_size": 2,
+                "influence": {
+                    "mode": "ihvp",
+                    "ihvp": {
+                        "damping": 0.01,
+                        "scale": 10.0,
+                        "recursion_depth": 8,
+                        "num_samples": 1,
+                    },
+                },
+                "lora": {"lora_only": True},
+                "logix": {"setup": {}, "run": {}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    run_logix_engine(config_path, logix_module=_OrderedLogIX)
+    assert _OrderedLogIX.init_payload["project"] == "dataset_attribution"
+
+
+def test_logix_engine_rejects_empty_project_after_resolution(tmp_path: Path) -> None:
+    run_root = tmp_path / "outputs" / "runs" / "invalid-project-run"
+    (run_root / "train" / "adapter").mkdir(parents=True, exist_ok=True)
+    (run_root / "train" / "tokenizer").mkdir(parents=True, exist_ok=True)
+    (run_root / "train" / "tokenizer" / "tokenizer.json").write_text("{}", encoding="utf-8")
+    _write_manifest(run_root / "splits" / "train.csv", count=2, start=0)
+    _write_manifest(run_root / "splits" / "test.csv", count=1, start=100)
+
+    config_path = tmp_path / "attribution_logix_invalid_project.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "run_id": "invalid-project-run",
+                "project_name": "   ",
+                "output_root": str(tmp_path / "outputs" / "runs"),
+                "top_k": 1,
+                "train_subset_size": 2,
+                "influence": {
+                    "mode": "ihvp",
+                    "ihvp": {
+                        "damping": 0.01,
+                        "scale": 10.0,
+                        "recursion_depth": 8,
+                        "num_samples": 1,
+                    },
+                },
+                "lora": {"lora_only": True},
+                "logix": {"project": "nested-project", "setup": {}, "run": {}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        run_logix_engine(config_path, logix_module=_FakeLogIX)
+    except ValueError as exc:
+        assert "resolved LogIX project is empty" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError for empty resolved project")

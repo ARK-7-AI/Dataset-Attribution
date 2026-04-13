@@ -4,6 +4,7 @@ model_name_or_path: llama3.2:3b
 seed: 2026
 top_k: 50
 train_subset_size: 600
+project_name: dataset_attribution
 
 # Optional split-path overrides for mixed-run setups.
 # Leave unset/null to use output_root/run_id/splits/{train,test}.csv.
@@ -24,5 +25,7 @@ lora:
   adapter_path: outputs/runs/final_report_run/train/adapter
 
 logix:
+  # Backward-compatible project key. Top-level `project_name` takes precedence.
+  project: dataset_attribution
   setup: {}
   run: {}
