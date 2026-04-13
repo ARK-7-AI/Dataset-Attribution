@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from argparse import ArgumentParser, Namespace
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import hashlib
 import importlib
@@ -64,21 +64,20 @@ _INITIALIZED_LOGIX_MODULE_IDS: set[int] = set()
 
 def build_parser() -> ArgumentParser:
     """Build CLI parser for the LogIX engine entrypoint."""
-
-    parser = ArgumentParser(description="Run LogIX dataset attribution pipeline")
-    parser.add_argument("--config", required=True, help="Path to attribution config YAML")
+    parser = ArgumentParser(
+        description="Run LogIX dataset attribution pipeline")
+    parser.add_argument("--config", required=True,
+                        help="Path to attribution config YAML")
     return parser
 
 
 def parse_args(argv: Sequence[str] | None = None) -> Namespace:
     """Parse CLI args for LogIX execution."""
-
     return build_parser().parse_args(argv)
 
 
 def _initialize_logix(raw_cfg: Mapping[str, Any]) -> str:
     """Resolve and validate canonical LogIX initialization config."""
-
     logix_cfg = raw_cfg.get("logix", {})
     if logix_cfg is None:
         logix_cfg = {}
@@ -93,6 +92,7 @@ def _initialize_logix(raw_cfg: Mapping[str, Any]) -> str:
         resolved_project = str(nested_project)
     else:
         resolved_project = "dataset_attribution"
+
     if not resolved_project.strip():
         raise ValueError(
             "Invalid project configuration: resolved LogIX project is empty. "
@@ -128,7 +128,8 @@ def _load_config(config_path: str | Path) -> LogIXEngineConfig:
     required_keys = ("run_id", "output_root", "top_k", "train_subset_size")
     missing_required = [key for key in required_keys if key not in raw]
     if missing_required:
-        raise ValueError(f"Missing required config keys: {', '.join(missing_required)}")
+        raise ValueError(
+            f"Missing required config keys: {', '.join(missing_required)}")
 
     run_id = str(raw.get("run_id", ""))
     if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,62}[A-Za-z0-9])?", run_id):
@@ -151,6 +152,7 @@ def _load_config(config_path: str | Path) -> LogIXEngineConfig:
     influence_cfg = raw.get("influence", {}) or {}
     if not isinstance(influence_cfg, dict):
         raise ValueError("influence must be a mapping")
+
     influence_mode = str(influence_cfg.get("mode", "ihvp"))
     if influence_mode != "ihvp":
         raise ValueError(f"Unsupported influence mode: {influence_mode}")
@@ -158,10 +160,12 @@ def _load_config(config_path: str | Path) -> LogIXEngineConfig:
     ihvp_cfg = influence_cfg.get("ihvp", {}) or {}
     if not isinstance(ihvp_cfg, dict):
         raise ValueError("influence.ihvp must be a mapping")
+
     required_ihvp = ("damping", "scale", "recursion_depth", "num_samples")
     missing_ihvp = [key for key in required_ihvp if key not in ihvp_cfg]
     if missing_ihvp:
         raise ValueError(f"Missing IHVP controls: {', '.join(missing_ihvp)}")
+
     ihvp_controls: dict[str, float | int] = {
         "damping": float(ihvp_cfg["damping"]),
         "scale": float(ihvp_cfg["scale"]),
@@ -169,20 +173,27 @@ def _load_config(config_path: str | Path) -> LogIXEngineConfig:
         "num_samples": int(ihvp_cfg["num_samples"]),
     }
     if ihvp_controls["recursion_depth"] <= 0 or ihvp_controls["num_samples"] <= 0:
-        raise ValueError("IHVP controls recursion_depth and num_samples must be positive")
+        raise ValueError(
+            "IHVP controls recursion_depth and num_samples must be positive")
 
     lora_cfg = raw.get("lora", {}) or {}
     if not isinstance(lora_cfg, dict):
         raise ValueError("lora must be a mapping")
+
     lora_only = bool(lora_cfg.get("lora_only", True))
     adapter_path_raw = lora_cfg.get("adapter_path")
-    lora_adapter_path = Path(str(adapter_path_raw)) if adapter_path_raw else None
+    lora_adapter_path = Path(str(adapter_path_raw)
+                             ) if adapter_path_raw else None
+
     train_split_raw = raw.get("train_manifest_path")
     test_split_raw = raw.get("test_manifest_path")
     shadow_split_raw = raw.get("shadow_manifest_path")
-    train_split_path_override = Path(str(train_split_raw)) if train_split_raw else None
-    test_split_path_override = Path(str(test_split_raw)) if test_split_raw else None
-    shadow_split_path_override = Path(str(shadow_split_raw)) if shadow_split_raw else None
+    train_split_path_override = Path(
+        str(train_split_raw)) if train_split_raw else None
+    test_split_path_override = Path(
+        str(test_split_raw)) if test_split_raw else None
+    shadow_split_path_override = Path(
+        str(shadow_split_raw)) if shadow_split_raw else None
 
     logix_cfg = raw.get("logix", {}) or {}
     if not isinstance(logix_cfg, dict):
@@ -194,6 +205,7 @@ def _load_config(config_path: str | Path) -> LogIXEngineConfig:
     extract_kwargs = logix_cfg.get("extract", {}) or {}
     score_kwargs = logix_cfg.get("score", {}) or {}
     test_subset_size_raw = logix_cfg.get("test_subset_size")
+
     if not isinstance(setup_kwargs, dict):
         raise ValueError("logix.setup must be a mapping")
     if not isinstance(run_kwargs, dict):
@@ -204,32 +216,15 @@ def _load_config(config_path: str | Path) -> LogIXEngineConfig:
         raise ValueError("logix.extract must be a mapping")
     if not isinstance(score_kwargs, dict):
         raise ValueError("logix.score must be a mapping")
+
     test_subset_size: int | None = None
     if test_subset_size_raw is not None:
         test_subset_size = int(test_subset_size_raw)
         if test_subset_size <= 0:
-            raise ValueError("logix.test_subset_size must be a positive integer when provided")
+            raise ValueError(
+                "logix.test_subset_size must be a positive integer when provided")
 
-<<<<<<< codex/analyze-project-architecture-and-plan-setup
-    top_level_project = raw.get("project_name")
-    nested_project = logix_cfg.get("project")
-    init_project = init_kwargs.get("project")
-    if top_level_project is not None:
-        resolved_project = str(top_level_project)
-    elif nested_project is not None:
-        resolved_project = str(nested_project)
-    elif init_project is not None:
-        resolved_project = str(init_project)
-    else:
-        resolved_project = "dataset_attribution"
-    if not resolved_project.strip():
-        raise ValueError(
-            "Invalid project configuration: resolved LogIX project is empty. "
-            "Set either top-level `project_name`, nested `logix.project`, or `logix.init.project` to a non-empty value."
-        )
-=======
     resolved_project = _initialize_logix(raw)
->>>>>>> main
 
     return LogIXEngineConfig(
         run_id=run_id,
@@ -257,16 +252,6 @@ def _load_config(config_path: str | Path) -> LogIXEngineConfig:
     )
 
 
-def _build_logix_init_payload(config: LogIXEngineConfig) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "project": config.project_name,
-        **config.init_kwargs,
-    }
-    if "config" not in payload:
-        payload["config"] = str(config.source_config_path)
-    return payload
-
-
 def _parse_version(version: str) -> tuple[int, ...]:
     matches = re.findall(r"\d+", version)
     if not matches:
@@ -290,7 +275,8 @@ def _validate_project_name(project: Any) -> str:
 def _init_logix(config: LogIXEngineConfig, logix_module: Any, logger: logging.Logger) -> None:
     module_id = id(logix_module)
     if module_id in _INITIALIZED_LOGIX_MODULE_IDS:
-        logger.info("LogIX already initialized in this process; skipping duplicate init call")
+        logger.info(
+            "LogIX already initialized in this process; skipping duplicate init call")
         return
 
     init_fn = getattr(logix_module, "init", None)
@@ -304,48 +290,34 @@ def _init_logix(config: LogIXEngineConfig, logix_module: Any, logger: logging.Lo
     version = str(getattr(logix_module, "__version__", "unknown"))
     version_tuple = _parse_version(version)
 
-    if version_tuple >= (0, 1, 1):
-        raw_config = payload.get("config")
-        payload["config"] = _coerce_pathlike_to_str(raw_config, "config")
-    elif "config" not in payload:
-        payload["config"] = {
-            "model_name_or_path": config.model_name_or_path,
-            "seed": config.seed,
-            "top_k": config.top_k,
-            "train_subset_size": config.train_subset_size,
-            "influence_mode": config.influence_mode,
-        }
-
     logger.info(
-        "LogIX init payload types: project=%s config=%s version=%s",
-        type(payload.get("project")).__name__,
-        type(payload.get("config")).__name__,
+        "Calling logix.init(project=%s) with installed LogIX version=%s parsed_version=%s",
+        project,
         version,
+        version_tuple,
     )
+
     try:
-        logger.info(
-            "Calling logix.init(project=%s, run_id=%s, version=%s)",
-            project,
-            config.run_id,
-            version,
-        )
         init_fn(project=project)
     except Exception as exc:
         raise RuntimeError(
             "Failed to initialize LogIX via `logix.init(...)`. "
-            "Probable causes: invalid LogIX init config payload or incompatible LogIX package version. "
+            "Probable causes: invalid LogIX project name or incompatible LogIX package version. "
             f"Underlying error: {type(exc).__name__}: {exc}"
         ) from exc
 
     _INITIALIZED_LOGIX_MODULE_IDS.add(module_id)
-    logger.info("Initialized LogIX project=%s run_id=%s", config.project_name, config.run_id)
+    logger.info("Initialized LogIX project=%s run_id=%s",
+                config.project_name, config.run_id)
 
 
 def _resolve_effective_input_paths(config: LogIXEngineConfig) -> dict[str, Path]:
     run_root = config.output_root / config.run_id
     train_dir = run_root / "train"
-    train_split_path = config.train_split_path_override or (run_root / "splits" / "train.csv")
-    test_split_path = config.test_split_path_override or (run_root / "splits" / "test.csv")
+    train_split_path = config.train_split_path_override or (
+        run_root / "splits" / "train.csv")
+    test_split_path = config.test_split_path_override or (
+        run_root / "splits" / "test.csv")
 
     adapter_path = config.lora_adapter_path
     if adapter_path is None:
@@ -382,7 +354,9 @@ def _validate_required_inputs(config: LogIXEngineConfig) -> None:
         ("train split manifest", train_split_path),
         ("test split manifest", test_split_path),
     ]
-    missing_paths = [f"- {label}: {path}" for label, path in required_paths if not path.exists()]
+    missing_paths = [f"- {label}: {path}" for label,
+                     path in required_paths if not path.exists()]
+
     if config.lora_only:
         adapter_dir = effective_paths["adapter"]
         legacy_adapter = train_dir / "adapter_checkpoint.bin"
@@ -399,6 +373,7 @@ def _validate_required_inputs(config: LogIXEngineConfig) -> None:
             "- tokenizer artifacts: expected one of "
             f"{tokenizer_dir} or {legacy_tokenizer}"
         )
+
     if missing_paths:
         raise FileNotFoundError(
             "LogIX preflight failed for selected run_id="
@@ -447,7 +422,9 @@ def _detect_hardware_context() -> dict[str, Any]:
     cuda_module = getattr(torch_module, "cuda", None)
     cuda_available = bool(cuda_module and cuda_module.is_available())
     hardware["cuda_available"] = cuda_available
-    hardware["torch_cuda_version"] = str(getattr(getattr(torch_module, "version", object()), "cuda", "unknown"))
+    hardware["torch_cuda_version"] = str(
+        getattr(getattr(torch_module, "version", object()), "cuda", "unknown"))
+
     if not cuda_available:
         hardware["cuda_device_count"] = 0
         hardware["cuda_devices"] = []
@@ -461,6 +438,7 @@ def _detect_hardware_context() -> dict[str, Any]:
         except Exception:
             device_name = "unknown"
         devices.append({"index": index, "name": device_name})
+
     hardware["cuda_device_count"] = device_count
     hardware["cuda_devices"] = devices
     return hardware
@@ -496,7 +474,6 @@ def setup_logix(
     logix_module: Any,
 ) -> Any:
     """Prepare LogIX execution context."""
-
     payload = {
         "model_name_or_path": config.model_name_or_path,
         "seed": config.seed,
@@ -519,7 +496,8 @@ def _setup_runtime_logger(output_dir: Path) -> logging.Logger:
 
     formatter = logging.Formatter("%(asctime)sZ | %(levelname)s | %(message)s")
 
-    file_handler = logging.FileHandler(output_dir / "runtime.log", encoding="utf-8")
+    file_handler = logging.FileHandler(
+        output_dir / "runtime.log", encoding="utf-8")
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
 
@@ -532,26 +510,34 @@ def _setup_runtime_logger(output_dir: Path) -> logging.Logger:
 
 def _write_checkpoint(output_dir: Path, payload: Mapping[str, Any]) -> Path:
     checkpoint_path = output_dir / "checkpoint.json"
-    checkpoint_path.write_text(json.dumps(dict(payload), indent=2), encoding="utf-8")
+    checkpoint_path.write_text(json.dumps(
+        dict(payload), indent=2), encoding="utf-8")
     return checkpoint_path
 
 
 def _deterministic_subset(sample_ids: list[str], subset_size: int, seed: int) -> list[str]:
     ranked: list[tuple[str, str]] = []
     for sample_id in sample_ids:
-        digest = hashlib.sha256(f"{seed}:{sample_id}".encode("utf-8")).hexdigest()
+        digest = hashlib.sha256(
+            f"{seed}:{sample_id}".encode("utf-8")).hexdigest()
         ranked.append((digest, sample_id))
     ranked.sort(key=lambda item: item[0])
     return [sample_id for _, sample_id in ranked[: min(subset_size, len(ranked))]]
 
 
-def _patch_trainer_for_logix(logix_module: Any, context: Any, config: LogIXEngineConfig, logger: logging.Logger) -> bool:
+def _patch_trainer_for_logix(
+    logix_module: Any,
+    context: Any,
+    config: LogIXEngineConfig,
+    logger: logging.Logger,
+) -> bool:
     payload = {
         "context": context,
         "lora_only": config.lora_only,
         "lora_adapter_path": str(config.lora_adapter_path) if config.lora_adapter_path else None,
         **config.patch_kwargs,
     }
+
     if hasattr(logix_module, "patch_trainer") and callable(logix_module.patch_trainer):
         logix_module.patch_trainer(**payload)
         logger.info("Patched HuggingFace Trainer via logix.patch_trainer")
@@ -562,10 +548,12 @@ def _patch_trainer_for_logix(logix_module: Any, context: Any, config: LogIXEngin
     patcher = getattr(hf, "patch_trainer", None) if hf else None
     if callable(patcher):
         patcher(**payload)
-        logger.info("Patched HuggingFace Trainer via logix.integration.huggingface.patch_trainer")
+        logger.info(
+            "Patched HuggingFace Trainer via logix.integration.huggingface.patch_trainer")
         return True
 
-    logger.warning("No official Trainer patch hook found on LogIX module; continuing without patch")
+    logger.warning(
+        "No official Trainer patch hook found on LogIX module; continuing without patch")
     return False
 
 
@@ -574,17 +562,22 @@ def _fallback_scores(test_ids: list[str], train_ids: list[str], seed: int) -> di
     for test_id in test_ids:
         row: dict[str, float] = {}
         for train_id in train_ids:
-            digest = hashlib.sha256(f"{seed}:{test_id}:{train_id}".encode("utf-8")).digest()
+            digest = hashlib.sha256(
+                f"{seed}:{test_id}:{train_id}".encode("utf-8")).digest()
             value = int.from_bytes(digest[:4], "little", signed=False) / 2**32
             row[train_id] = value
         scores[test_id] = row
     return scores
 
 
-def _top_k_rankings(scores: Mapping[str, Mapping[str, float]], top_k: int) -> dict[str, list[dict[str, float | str]]]:
+def _top_k_rankings(
+    scores: Mapping[str, Mapping[str, float]],
+    top_k: int,
+) -> dict[str, list[dict[str, float | str]]]:
     rankings: dict[str, list[dict[str, float | str]]] = {}
     for test_id, train_scores in scores.items():
-        sorted_items = sorted(train_scores.items(), key=lambda item: item[1], reverse=True)[:top_k]
+        sorted_items = sorted(train_scores.items(),
+                              key=lambda item: item[1], reverse=True)[:top_k]
         rankings[test_id] = [
             {"sample_id": sample_id, "score": float(score)}
             for sample_id, score in sorted_items
@@ -598,9 +591,11 @@ def _write_influence_scores_csv(
 ) -> Path:
     rows: list[tuple[str, str, float, int]] = []
     for test_id, per_train_scores in scores.items():
-        ranked = sorted(per_train_scores.items(), key=lambda item: item[1], reverse=True)
+        ranked = sorted(per_train_scores.items(),
+                        key=lambda item: item[1], reverse=True)
         for rank, (train_id, influence_score) in enumerate(ranked, start=1):
-            rows.append((str(test_id), str(train_id), float(influence_score), rank))
+            rows.append((str(test_id), str(train_id),
+                        float(influence_score), rank))
 
     rows.sort(key=lambda item: (item[0], item[3], item[1]))
     csv_path = output_dir / "influence_scores.csv"
@@ -640,7 +635,6 @@ def execute_logix(
     logix_module: Any,
 ) -> Mapping[str, Any]:
     """Execute LogIX run and normalize output to a mapping."""
-
     run_payload = {
         "context": context,
         "sample_ids": sample_ids[: config.train_subset_size],
@@ -671,14 +665,15 @@ def execute_logix(
 
 def run_logix_engine(config_path: str | Path, logix_module: Any | None = None) -> LogIXRunArtifacts:
     """Run LogIX with config-driven setup and persist reproducible artifacts."""
-
     config = _load_config(config_path)
     _print_preflight_paths(config)
     _validate_required_inputs(config)
+
     if logix_module is None:
         logix_module = _import_logix_module()
 
-    require_gradients = config.influence_mode in {"gradient_similarity", "trak"}
+    require_gradients = config.influence_mode in {
+        "gradient_similarity", "trak"}
     resolved = resolve_attribution_inputs(
         output_root=config.output_root,
         run_id=config.run_id,
@@ -686,13 +681,17 @@ def run_logix_engine(config_path: str | Path, logix_module: Any | None = None) -
         train_split_path_override=config.train_split_path_override,
         test_split_path_override=config.test_split_path_override,
     )
+
     output_dir = resolved.run_root / "attribution" / "logix"
     output_dir.mkdir(parents=True, exist_ok=True)
     logger = _setup_runtime_logger(output_dir)
+
     logger.info("Starting LogIX attribution run_id=%s", config.run_id)
     print(f"[startup] effective project: {config.project_name}")
     print(f"[startup] effective run_id: {config.run_id}")
-    logger.info("Effective LogIX project=%s run_id=%s", config.project_name, config.run_id)
+    logger.info("Effective LogIX project=%s run_id=%s",
+                config.project_name, config.run_id)
+
     run_start = time.perf_counter()
     setup_start = time.perf_counter()
 
@@ -706,20 +705,28 @@ def run_logix_engine(config_path: str | Path, logix_module: Any | None = None) -
 
     sample_ids = resolved.train_sample_ids
     _init_logix(config=config, logix_module=logix_module, logger=logger)
-    config = LogIXEngineConfig(
-        **{
-            **config.__dict__,
-            "lora_adapter_path": resolved.adapter_artifact,
-            "tokenizer_path": resolved.tokenizer_artifact,
-        }
+
+    config = replace(
+        config,
+        lora_adapter_path=resolved.adapter_artifact,
+        tokenizer_path=resolved.tokenizer_artifact,
     )
-    context = setup_logix(config, output_dir=output_dir, logix_module=logix_module)
+
+    context = setup_logix(config, output_dir=output_dir,
+                          logix_module=logix_module)
+
     checkpoint["phases_completed"].append("logix_init")
     checkpoint["status"] = "trainer_patching"
     checkpoint["updated_at"] = datetime.now(timezone.utc).isoformat()
     _write_checkpoint(output_dir, checkpoint)
 
-    trainer_patched = _patch_trainer_for_logix(logix_module=logix_module, context=context, config=config, logger=logger)
+    trainer_patched = _patch_trainer_for_logix(
+        logix_module=logix_module,
+        context=context,
+        config=config,
+        logger=logger,
+    )
+
     setup_elapsed = time.perf_counter() - setup_start
     checkpoint["phases_completed"].append("trainer_patch")
     checkpoint["trainer_patched"] = trainer_patched
@@ -727,8 +734,11 @@ def run_logix_engine(config_path: str | Path, logix_module: Any | None = None) -
     checkpoint["updated_at"] = datetime.now(timezone.utc).isoformat()
     _write_checkpoint(output_dir, checkpoint)
 
-    train_subset_ids = _deterministic_subset(sample_ids, config.train_subset_size, config.seed)
-    logger.info("Extracting logs for %d/%d train samples", len(train_subset_ids), len(sample_ids))
+    train_subset_ids = _deterministic_subset(
+        sample_ids, config.train_subset_size, config.seed)
+    logger.info("Extracting logs for %d/%d train samples",
+                len(train_subset_ids), len(sample_ids))
+
     extraction_payload = {
         "context": context,
         "sample_ids": train_subset_ids,
@@ -736,6 +746,7 @@ def run_logix_engine(config_path: str | Path, logix_module: Any | None = None) -
         "lora_only": config.lora_only,
         **config.extract_kwargs,
     }
+
     extraction_start = time.perf_counter()
     if hasattr(logix_module, "extract_log") and callable(logix_module.extract_log):
         extracted = logix_module.extract_log(**extraction_payload)
@@ -753,7 +764,9 @@ def run_logix_engine(config_path: str | Path, logix_module: Any | None = None) -
 
     test_sample_ids = resolved.test_sample_ids
     if config.test_subset_size is not None:
-        test_sample_ids = _deterministic_subset(test_sample_ids, config.test_subset_size, config.seed)
+        test_sample_ids = _deterministic_subset(
+            test_sample_ids, config.test_subset_size, config.seed)
+
     logger.info("Scoring influence for %d test samples", len(test_sample_ids))
 
     scoring_payload = {
@@ -764,17 +777,21 @@ def run_logix_engine(config_path: str | Path, logix_module: Any | None = None) -
         "ihvp_controls": config.ihvp_controls,
         **config.score_kwargs,
     }
+
     scoring_start = time.perf_counter()
     if hasattr(logix_module, "score_influence") and callable(logix_module.score_influence):
         raw_scores = logix_module.score_influence(**scoring_payload)
     elif hasattr(logix_module, "score") and callable(logix_module.score):
         raw_scores = logix_module.score(**scoring_payload)
     else:
-        raw_scores = _fallback_scores(test_sample_ids, train_subset_ids, seed=config.seed)
+        raw_scores = _fallback_scores(
+            test_sample_ids, train_subset_ids, seed=config.seed)
     scoring_elapsed = time.perf_counter() - scoring_start
 
     if not isinstance(raw_scores, Mapping):
-        raise ValueError("Influence scoring must return a mapping keyed by test sample id")
+        raise ValueError(
+            "Influence scoring must return a mapping keyed by test sample id")
+
     influence_scores = {str(k): dict(v) for k, v in raw_scores.items()}
     top_rankings = _top_k_rankings(influence_scores, config.top_k)
 
@@ -784,10 +801,12 @@ def run_logix_engine(config_path: str | Path, logix_module: Any | None = None) -
     _write_checkpoint(output_dir, checkpoint)
 
     execute_start = time.perf_counter()
-    result = execute_logix(context, config=config, sample_ids=train_subset_ids, logix_module=logix_module)
+    result = execute_logix(
+        context, config=config, sample_ids=train_subset_ids, logix_module=logix_module)
     execute_elapsed = time.perf_counter() - execute_start
 
-    influence_scores_path = _write_influence_scores_csv(output_dir, influence_scores)
+    influence_scores_path = _write_influence_scores_csv(
+        output_dir, influence_scores)
     topk_path = _write_topk_json(output_dir, top_rankings)
 
     metadata = {
@@ -855,12 +874,15 @@ def run_logix_engine(config_path: str | Path, logix_module: Any | None = None) -
             "extraction": extracted,
         },
     }
+
     metadata_path = output_dir / "metadata.json"
     metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+
     checkpoint["phases_completed"].append("completed")
     checkpoint["status"] = "completed"
     checkpoint["updated_at"] = datetime.now(timezone.utc).isoformat()
     _write_checkpoint(output_dir, checkpoint)
+
     logger.info(
         "Completed LogIX attribution. influence_scores=%s topk=%s metadata=%s",
         influence_scores_path,
@@ -878,10 +900,10 @@ def run_logix_engine(config_path: str | Path, logix_module: Any | None = None) -
 
 def main(argv: Sequence[str] | None = None) -> None:
     """CLI entrypoint for `python -m src.attribution.logix_engine --config ...`."""
-
     args = parse_args(argv)
     artifacts = run_logix_engine(args.config)
-    print(f"LogIX attribution finished. Outputs written to: {artifacts.output_dir}")
+    print(
+        f"LogIX attribution finished. Outputs written to: {artifacts.output_dir}")
 
 
 if __name__ == "__main__":
