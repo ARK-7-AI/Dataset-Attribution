@@ -74,6 +74,24 @@ class _NoInitLogIX:
         return {"status": "ok", "kwargs": kwargs}
 
 
+class _PathConfigLogIX:
+    __version__ = "0.1.1"
+    init_payload: dict[str, object] = {}
+
+    @classmethod
+    def init(cls, project: str, config: str = "./config.yaml"):
+        cls.init_payload = {"project": project, "config": config}
+        return cls.init_payload
+
+    @staticmethod
+    def setup(**kwargs):
+        return {"session": "path-config", **kwargs}
+
+    @staticmethod
+    def run(**kwargs):
+        return {"status": "ok", "num_ranked": len(kwargs.get("sample_ids", []))}
+
+
 def _write_manifest(path: Path, count: int, start: int = 0) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as handle:
@@ -739,3 +757,87 @@ def test_logix_engine_rejects_empty_project_after_resolution(tmp_path: Path) -> 
         assert "resolved LogIX project is empty" in str(exc)
     else:
         raise AssertionError("Expected ValueError for empty resolved project")
+
+
+def test_logix_engine_passes_string_config_path_to_logix_init(tmp_path: Path) -> None:
+    _PathConfigLogIX.init_payload = {}
+    _INITIALIZED_LOGIX_MODULE_IDS.clear()
+    run_root = tmp_path / "outputs" / "runs" / "path-config-run"
+    (run_root / "train" / "adapter").mkdir(parents=True, exist_ok=True)
+    (run_root / "train" / "tokenizer").mkdir(parents=True, exist_ok=True)
+    (run_root / "train" / "tokenizer" / "tokenizer.json").write_text("{}", encoding="utf-8")
+    _write_manifest(run_root / "splits" / "train.csv", count=2, start=0)
+    _write_manifest(run_root / "splits" / "test.csv", count=1, start=100)
+
+    config_path = tmp_path / "attribution_logix_path_config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "run_id": "path-config-run",
+                "project_name": "path-config-project",
+                "output_root": str(tmp_path / "outputs" / "runs"),
+                "top_k": 1,
+                "train_subset_size": 2,
+                "influence": {
+                    "mode": "ihvp",
+                    "ihvp": {
+                        "damping": 0.01,
+                        "scale": 10.0,
+                        "recursion_depth": 8,
+                        "num_samples": 1,
+                    },
+                },
+                "lora": {"lora_only": True},
+                "logix": {"setup": {}, "run": {}, "init": {"config": "configs/logix.yaml"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    run_logix_engine(config_path, logix_module=_PathConfigLogIX)
+    assert isinstance(_PathConfigLogIX.init_payload["project"], str)
+    assert isinstance(_PathConfigLogIX.init_payload["config"], str)
+    assert _PathConfigLogIX.init_payload["config"] == "configs/logix.yaml"
+
+
+def test_logix_engine_fails_fast_on_dict_config_for_path_based_logix(tmp_path: Path) -> None:
+    _INITIALIZED_LOGIX_MODULE_IDS.clear()
+    run_root = tmp_path / "outputs" / "runs" / "path-config-bad-run"
+    (run_root / "train" / "adapter").mkdir(parents=True, exist_ok=True)
+    (run_root / "train" / "tokenizer").mkdir(parents=True, exist_ok=True)
+    (run_root / "train" / "tokenizer" / "tokenizer.json").write_text("{}", encoding="utf-8")
+    _write_manifest(run_root / "splits" / "train.csv", count=2, start=0)
+    _write_manifest(run_root / "splits" / "test.csv", count=1, start=100)
+
+    config_path = tmp_path / "attribution_logix_path_config_bad.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "run_id": "path-config-bad-run",
+                "project_name": "path-config-project",
+                "output_root": str(tmp_path / "outputs" / "runs"),
+                "top_k": 1,
+                "train_subset_size": 2,
+                "influence": {
+                    "mode": "ihvp",
+                    "ihvp": {
+                        "damping": 0.01,
+                        "scale": 10.0,
+                        "recursion_depth": 8,
+                        "num_samples": 1,
+                    },
+                },
+                "lora": {"lora_only": True},
+                "logix": {"setup": {}, "run": {}, "init": {"config": {"bad": "dict"}}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        run_logix_engine(config_path, logix_module=_PathConfigLogIX)
+    except TypeError as exc:
+        assert "path-like" in str(exc)
+        assert "got dict" in str(exc)
+    else:
+        raise AssertionError("Expected TypeError when dict config is passed to path-based LogIX init")

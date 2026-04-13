@@ -257,9 +257,10 @@ bash scripts/run_step1_final_check.sh --run-id <run_id>
 - Script: `scripts/run_step2_logix.sh`
 - Prerequisites:
   - Step 1 gate has passed for the same run.
-  - `logix` Python package is installed (via project dependencies including `logix-ai`).
+  - `logix` Python package is installed (via project dependencies including `logix-ai`), with required contract `logix>=0.1.1`.
   - Attribution config exists (default: `configs/attribution_logix.yaml`) and points to valid run artifacts/manifests.
   - LogIX runtime initialization is required before extraction/influence calls; the engine now performs `logix.init(...)` automatically and expects stable metadata keys including `project_name` (recommended) and `run_id`.
+  - Init contract for `logix>=0.1.1`: `logix.init(project: str, config: str = "./config.yaml")`. The engine validates `project` as non-empty `str` and validates `config` as `str | os.PathLike` (never a dict for this path-based API).
   - Default behavior uses one `run_id` for splits and training artifacts, but mixed-run layouts are supported when explicit manifest paths are set (for example: training artifacts from `final_report_run` with split CSVs from `default_run`).
 - Exact command:
 

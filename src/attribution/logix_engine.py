@@ -10,6 +10,7 @@ import importlib
 import inspect
 import json
 import logging
+import os
 from pathlib import Path
 import platform
 import re
@@ -219,25 +220,42 @@ def _load_config(config_path: str | Path) -> LogIXEngineConfig:
 
 
 def _build_logix_init_payload(config: LogIXEngineConfig) -> dict[str, Any]:
-    runtime_config_payload = {
-        "model_name_or_path": config.model_name_or_path,
-        "seed": config.seed,
-        "top_k": config.top_k,
-        "train_subset_size": config.train_subset_size,
-        "influence_mode": config.influence_mode,
-    }
     payload: dict[str, Any] = {
         "project": config.project_name,
-        "project_name": config.project_name,
-        "run_name": config.run_id,
-        "run_id": config.run_id,
-        "config": runtime_config_payload,
         **config.init_kwargs,
     }
     return payload
 
 
-def _ensure_logix_initialized(config: LogIXEngineConfig, logix_module: Any, logger: logging.Logger) -> None:
+def _parse_version(version: str) -> tuple[int, ...]:
+    matches = re.findall(r"\d+", version)
+    if not matches:
+        return (0,)
+    return tuple(int(part) for part in matches)
+
+
+def _validate_project_name(project: Any) -> str:
+    if not isinstance(project, str) or not project.strip():
+        raise TypeError("LogIX init requires `project` as a non-empty string.")
+    return project
+
+
+def _coerce_pathlike_to_str(value: Any, field_name: str) -> str:
+    if isinstance(value, dict):
+        raise TypeError(
+            f"LogIX init expected `{field_name}` as path-like (`str | os.PathLike`), got dict."
+        )
+    if isinstance(value, (str, os.PathLike)):
+        path_text = os.fspath(value)
+        if not isinstance(path_text, str) or not path_text.strip():
+            raise TypeError(f"LogIX init `{field_name}` path must be a non-empty string.")
+        return path_text
+    raise TypeError(
+        f"LogIX init expected `{field_name}` as path-like (`str | os.PathLike`), got {type(value).__name__}."
+    )
+
+
+def _init_logix(config: LogIXEngineConfig, logix_module: Any, logger: logging.Logger) -> None:
     module_id = id(logix_module)
     if module_id in _INITIALIZED_LOGIX_MODULE_IDS:
         logger.info("LogIX already initialized in this process; skipping duplicate init call")
@@ -251,6 +269,28 @@ def _ensure_logix_initialized(config: LogIXEngineConfig, logix_module: Any, logg
         )
 
     payload = _build_logix_init_payload(config)
+    payload["project"] = _validate_project_name(payload.get("project"))
+    version = str(getattr(logix_module, "__version__", "unknown"))
+    version_tuple = _parse_version(version)
+
+    if version_tuple >= (0, 1, 1):
+        raw_config = payload.get("config", "./config.yaml")
+        payload["config"] = _coerce_pathlike_to_str(raw_config, "config")
+    elif "config" not in payload:
+        payload["config"] = {
+            "model_name_or_path": config.model_name_or_path,
+            "seed": config.seed,
+            "top_k": config.top_k,
+            "train_subset_size": config.train_subset_size,
+            "influence_mode": config.influence_mode,
+        }
+
+    logger.info(
+        "LogIX init payload types: project=%s config=%s version=%s",
+        type(payload.get("project")).__name__,
+        type(payload.get("config")).__name__,
+        version,
+    )
     try:
         signature = inspect.signature(init_fn)
         accepts_var_kwargs = any(
@@ -269,7 +309,8 @@ def _ensure_logix_initialized(config: LogIXEngineConfig, logix_module: Any, logg
     except Exception as exc:
         raise RuntimeError(
             "Failed to initialize LogIX via `logix.init(...)`. "
-            "Probable causes: invalid LogIX init config payload or incompatible LogIX package version."
+            "Probable causes: invalid LogIX init config payload or incompatible LogIX package version. "
+            f"Underlying error: {type(exc).__name__}: {exc}"
         ) from exc
 
     _INITIALIZED_LOGIX_MODULE_IDS.add(module_id)
@@ -641,7 +682,7 @@ def run_logix_engine(config_path: str | Path, logix_module: Any | None = None) -
     checkpoint_path = _write_checkpoint(output_dir, checkpoint)
 
     sample_ids = resolved.train_sample_ids
-    _ensure_logix_initialized(config=config, logix_module=logix_module, logger=logger)
+    _init_logix(config=config, logix_module=logix_module, logger=logger)
     config = LogIXEngineConfig(
         **{
             **config.__dict__,
