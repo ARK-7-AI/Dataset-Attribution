@@ -46,6 +46,7 @@ class LogIXEngineConfig:
     extract_kwargs: dict[str, Any]
     score_kwargs: dict[str, Any]
     test_subset_size: int | None
+    source_config_path: Path
 
 
 @dataclass(frozen=True)
@@ -233,7 +234,27 @@ def _load_config(config_path: str | Path) -> LogIXEngineConfig:
         extract_kwargs={str(k): v for k, v in extract_kwargs.items()},
         score_kwargs={str(k): v for k, v in score_kwargs.items()},
         test_subset_size=test_subset_size,
+        source_config_path=path,
     )
+
+
+def _build_logix_init_payload(config: LogIXEngineConfig) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "project": config.project_name,
+        **config.init_kwargs,
+    }
+    if "config" not in payload:
+        payload["config"] = str(config.source_config_path)
+    return payload
+
+
+def _parse_version(version: str) -> tuple[int, ...]:
+    matches = re.findall(r"\d+", version)
+    if not matches:
+        return (0,)
+    return tuple(int(part) for part in matches)
+
+
 def _validate_project_name(project: Any) -> str:
     if not isinstance(project, str):
         raise TypeError("LogIX init requires `project` as a non-empty string.")
@@ -262,6 +283,26 @@ def _init_logix(config: LogIXEngineConfig, logix_module: Any, logger: logging.Lo
 
     project = _validate_project_name(config.project_name)
     version = str(getattr(logix_module, "__version__", "unknown"))
+    version_tuple = _parse_version(version)
+
+    if version_tuple >= (0, 1, 1):
+        raw_config = payload.get("config")
+        payload["config"] = _coerce_pathlike_to_str(raw_config, "config")
+    elif "config" not in payload:
+        payload["config"] = {
+            "model_name_or_path": config.model_name_or_path,
+            "seed": config.seed,
+            "top_k": config.top_k,
+            "train_subset_size": config.train_subset_size,
+            "influence_mode": config.influence_mode,
+        }
+
+    logger.info(
+        "LogIX init payload types: project=%s config=%s version=%s",
+        type(payload.get("project")).__name__,
+        type(payload.get("config")).__name__,
+        version,
+    )
     try:
         logger.info(
             "Calling logix.init(project=%s, run_id=%s, version=%s)",
