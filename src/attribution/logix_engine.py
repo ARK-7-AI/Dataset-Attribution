@@ -7,10 +7,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import importlib
-import inspect
 import json
 import logging
-import os
 from pathlib import Path
 import platform
 import re
@@ -44,7 +42,6 @@ class LogIXEngineConfig:
     shadow_split_path_override: Path | None
     setup_kwargs: dict[str, Any]
     run_kwargs: dict[str, Any]
-    init_kwargs: dict[str, Any]
     patch_kwargs: dict[str, Any]
     extract_kwargs: dict[str, Any]
     score_kwargs: dict[str, Any]
@@ -76,6 +73,44 @@ def parse_args(argv: Sequence[str] | None = None) -> Namespace:
     """Parse CLI args for LogIX execution."""
 
     return build_parser().parse_args(argv)
+
+
+def _initialize_logix(raw_cfg: Mapping[str, Any]) -> str:
+    """Resolve and validate canonical LogIX initialization config."""
+
+    logix_cfg = raw_cfg.get("logix", {})
+    if logix_cfg is None:
+        logix_cfg = {}
+    if not isinstance(logix_cfg, dict):
+        raise ValueError("logix must be a mapping")
+
+    top_level_project = raw_cfg.get("project_name")
+    nested_project = logix_cfg.get("project")
+    if top_level_project is not None:
+        resolved_project = str(top_level_project)
+    elif nested_project is not None:
+        resolved_project = str(nested_project)
+    else:
+        resolved_project = "dataset_attribution"
+    if not resolved_project.strip():
+        raise ValueError(
+            "Invalid project configuration: resolved LogIX project is empty. "
+            "Set either top-level `project_name` or nested `logix.project` to a non-empty value."
+        )
+
+    legacy_init = logix_cfg.get("init")
+    if legacy_init is not None:
+        if isinstance(legacy_init, dict):
+            raise ValueError(
+                "Deprecated config key `logix.init` is no longer supported as a mapping. "
+                "Use top-level `project_name` or `logix.project` for initialization."
+            )
+        raise ValueError(
+            "Invalid config for `logix.init`: expected omitted/null, got "
+            f"{type(legacy_init).__name__}. Use `project_name` or `logix.project` instead."
+        )
+
+    return resolved_project
 
 
 def _load_config(config_path: str | Path) -> LogIXEngineConfig:
@@ -148,15 +183,12 @@ def _load_config(config_path: str | Path) -> LogIXEngineConfig:
     test_split_path_override = Path(str(test_split_raw)) if test_split_raw else None
     shadow_split_path_override = Path(str(shadow_split_raw)) if shadow_split_raw else None
 
-    logix_cfg = raw.get("logix", {})
-    if logix_cfg is None:
-        logix_cfg = {}
+    logix_cfg = raw.get("logix", {}) or {}
     if not isinstance(logix_cfg, dict):
         raise ValueError("logix must be a mapping")
 
     setup_kwargs = logix_cfg.get("setup", {}) or {}
     run_kwargs = logix_cfg.get("run", {}) or {}
-    init_kwargs = logix_cfg.get("init", {}) or {}
     patch_kwargs = logix_cfg.get("patch_trainer", {}) or {}
     extract_kwargs = logix_cfg.get("extract", {}) or {}
     score_kwargs = logix_cfg.get("score", {}) or {}
@@ -165,8 +197,6 @@ def _load_config(config_path: str | Path) -> LogIXEngineConfig:
         raise ValueError("logix.setup must be a mapping")
     if not isinstance(run_kwargs, dict):
         raise ValueError("logix.run must be a mapping")
-    if not isinstance(init_kwargs, dict):
-        raise ValueError("logix.init must be a mapping")
     if not isinstance(patch_kwargs, dict):
         raise ValueError("logix.patch_trainer must be a mapping")
     if not isinstance(extract_kwargs, dict):
@@ -179,19 +209,7 @@ def _load_config(config_path: str | Path) -> LogIXEngineConfig:
         if test_subset_size <= 0:
             raise ValueError("logix.test_subset_size must be a positive integer when provided")
 
-    top_level_project = raw.get("project_name")
-    nested_project = logix_cfg.get("project")
-    if top_level_project is not None:
-        resolved_project = str(top_level_project)
-    elif nested_project is not None:
-        resolved_project = str(nested_project)
-    else:
-        resolved_project = "dataset_attribution"
-    if not resolved_project.strip():
-        raise ValueError(
-            "Invalid project configuration: resolved LogIX project is empty. "
-            "Set either top-level `project_name` or nested `logix.project` to a non-empty value."
-        )
+    resolved_project = _initialize_logix(raw)
 
     return LogIXEngineConfig(
         run_id=run_id,
@@ -211,22 +229,11 @@ def _load_config(config_path: str | Path) -> LogIXEngineConfig:
         shadow_split_path_override=shadow_split_path_override,
         setup_kwargs={str(k): v for k, v in setup_kwargs.items()},
         run_kwargs={str(k): v for k, v in run_kwargs.items()},
-        init_kwargs={str(k): v for k, v in init_kwargs.items()},
         patch_kwargs={str(k): v for k, v in patch_kwargs.items()},
         extract_kwargs={str(k): v for k, v in extract_kwargs.items()},
         score_kwargs={str(k): v for k, v in score_kwargs.items()},
         test_subset_size=test_subset_size,
     )
-
-
-def _build_logix_init_payload(config: LogIXEngineConfig) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "project": config.project_name,
-        **config.init_kwargs,
-    }
-    return payload
-
-
 def _validate_project_name(project: Any) -> str:
     if not isinstance(project, str):
         raise TypeError("LogIX init requires `project` as a non-empty string.")
@@ -238,21 +245,6 @@ def _validate_project_name(project: Any) -> str:
             "LogIX init requires `project` to match [A-Za-z0-9_.-] and be <= 128 characters."
         )
     return normalized
-
-
-def _coerce_pathlike_to_str(value: Any, field_name: str) -> str:
-    if isinstance(value, dict):
-        raise TypeError(
-            f"LogIX init expected `{field_name}` as path-like (`str | os.PathLike`), got dict."
-        )
-    if isinstance(value, (str, os.PathLike)):
-        path_text = os.fspath(value)
-        if not isinstance(path_text, str) or not path_text.strip():
-            raise TypeError(f"LogIX init `{field_name}` path must be a non-empty string.")
-        return path_text
-    raise TypeError(
-        f"LogIX init expected `{field_name}` as path-like (`str | os.PathLike`), got {type(value).__name__}."
-    )
 
 
 def _init_logix(config: LogIXEngineConfig, logix_module: Any, logger: logging.Logger) -> None:
@@ -268,57 +260,16 @@ def _init_logix(config: LogIXEngineConfig, logix_module: Any, logger: logging.Lo
             "Probable causes: incompatible LogIX version or incorrect package installation."
         )
 
-    payload = _build_logix_init_payload(config)
-    payload["project"] = _validate_project_name(payload.get("project"))
+    project = _validate_project_name(config.project_name)
     version = str(getattr(logix_module, "__version__", "unknown"))
     try:
-        signature = inspect.signature(init_fn)
-        config_parameter = signature.parameters.get("config")
-        explicit_config = payload.get("config")
-        explicit_config_is_set = explicit_config is not None
-        if explicit_config_is_set:
-            payload["config"] = _coerce_pathlike_to_str(explicit_config, "config")
-
-        if config_parameter and not explicit_config_is_set:
-            default_value = config_parameter.default
-            if isinstance(default_value, str) and "config.yaml" in default_value:
-                raise RuntimeError(
-                    "Refusing implicit LogIX config discovery from current working directory. "
-                    "Set `logix.init.config` explicitly in attribution config to use path-based init."
-                )
-
-        accepts_var_kwargs = any(
-            parameter.kind is inspect.Parameter.VAR_KEYWORD
-            for parameter in signature.parameters.values()
-        )
-        if accepts_var_kwargs:
-            init_kwargs = payload if explicit_config_is_set else {k: v for k, v in payload.items() if k != "config"}
-        else:
-            init_kwargs = {k: v for k, v in payload.items() if k in signature.parameters}
-        if "project" not in init_kwargs:
-            raise RuntimeError(
-                "Failed to initialize LogIX: installed `logix.init(...)` does not accept required `project` argument."
-            )
-        missing_required = [
-            name
-            for name, parameter in signature.parameters.items()
-            if parameter.default is inspect._empty
-            and parameter.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
-            and name not in init_kwargs
-        ]
-        if missing_required:
-            raise RuntimeError(
-                "Failed to initialize LogIX: missing required init arguments for installed LogIX version: "
-                + ", ".join(missing_required)
-            )
         logger.info(
-            "Calling logix.init(project=%s, run_id=%s, extra_keys=%s, version=%s)",
-            config.project_name,
+            "Calling logix.init(project=%s, run_id=%s, version=%s)",
+            project,
             config.run_id,
-            sorted(key for key in init_kwargs.keys() if key != "project"),
             version,
         )
-        init_fn(**init_kwargs)
+        init_fn(project=project)
     except Exception as exc:
         raise RuntimeError(
             "Failed to initialize LogIX via `logix.init(...)`. "
@@ -490,7 +441,6 @@ def setup_logix(
         "model_name_or_path": config.model_name_or_path,
         "seed": config.seed,
         "output_dir": str(output_dir),
-        **config.init_kwargs,
         **config.setup_kwargs,
     }
 
@@ -809,7 +759,6 @@ def run_logix_engine(config_path: str | Path, logix_module: Any | None = None) -
         "gradient_subset_path": str(resolved.gradient_subset_path) if resolved.gradient_subset_path else None,
         "setup_kwargs": config.setup_kwargs,
         "run_kwargs": config.run_kwargs,
-        "init_kwargs": config.init_kwargs,
         "patch_kwargs": config.patch_kwargs,
         "extract_kwargs": config.extract_kwargs,
         "score_kwargs": config.score_kwargs,
