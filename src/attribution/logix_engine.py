@@ -227,17 +227,17 @@ def _build_logix_init_payload(config: LogIXEngineConfig) -> dict[str, Any]:
     return payload
 
 
-def _parse_version(version: str) -> tuple[int, ...]:
-    matches = re.findall(r"\d+", version)
-    if not matches:
-        return (0,)
-    return tuple(int(part) for part in matches)
-
-
 def _validate_project_name(project: Any) -> str:
-    if not isinstance(project, str) or not project.strip():
+    if not isinstance(project, str):
         raise TypeError("LogIX init requires `project` as a non-empty string.")
-    return project
+    normalized = project.strip()
+    if not normalized:
+        raise TypeError("LogIX init requires `project` as a non-empty string.")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", normalized):
+        raise ValueError(
+            "LogIX init requires `project` to match [A-Za-z0-9_.-] and be <= 128 characters."
+        )
+    return normalized
 
 
 def _coerce_pathlike_to_str(value: Any, field_name: str) -> str:
@@ -271,40 +271,53 @@ def _init_logix(config: LogIXEngineConfig, logix_module: Any, logger: logging.Lo
     payload = _build_logix_init_payload(config)
     payload["project"] = _validate_project_name(payload.get("project"))
     version = str(getattr(logix_module, "__version__", "unknown"))
-    version_tuple = _parse_version(version)
-
-    if version_tuple >= (0, 1, 1):
-        raw_config = payload.get("config", "./config.yaml")
-        payload["config"] = _coerce_pathlike_to_str(raw_config, "config")
-    elif "config" not in payload:
-        payload["config"] = {
-            "model_name_or_path": config.model_name_or_path,
-            "seed": config.seed,
-            "top_k": config.top_k,
-            "train_subset_size": config.train_subset_size,
-            "influence_mode": config.influence_mode,
-        }
-
-    logger.info(
-        "LogIX init payload types: project=%s config=%s version=%s",
-        type(payload.get("project")).__name__,
-        type(payload.get("config")).__name__,
-        version,
-    )
     try:
         signature = inspect.signature(init_fn)
+        config_parameter = signature.parameters.get("config")
+        explicit_config = payload.get("config")
+        explicit_config_is_set = explicit_config is not None
+        if explicit_config_is_set:
+            payload["config"] = _coerce_pathlike_to_str(explicit_config, "config")
+
+        if config_parameter and not explicit_config_is_set:
+            default_value = config_parameter.default
+            if isinstance(default_value, str) and "config.yaml" in default_value:
+                raise RuntimeError(
+                    "Refusing implicit LogIX config discovery from current working directory. "
+                    "Set `logix.init.config` explicitly in attribution config to use path-based init."
+                )
+
         accepts_var_kwargs = any(
             parameter.kind is inspect.Parameter.VAR_KEYWORD
             for parameter in signature.parameters.values()
         )
         if accepts_var_kwargs:
-            init_kwargs = payload
+            init_kwargs = payload if explicit_config_is_set else {k: v for k, v in payload.items() if k != "config"}
         else:
             init_kwargs = {k: v for k, v in payload.items() if k in signature.parameters}
         if "project" not in init_kwargs:
             raise RuntimeError(
                 "Failed to initialize LogIX: installed `logix.init(...)` does not accept required `project` argument."
             )
+        missing_required = [
+            name
+            for name, parameter in signature.parameters.items()
+            if parameter.default is inspect._empty
+            and parameter.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+            and name not in init_kwargs
+        ]
+        if missing_required:
+            raise RuntimeError(
+                "Failed to initialize LogIX: missing required init arguments for installed LogIX version: "
+                + ", ".join(missing_required)
+            )
+        logger.info(
+            "Calling logix.init(project=%s, run_id=%s, extra_keys=%s, version=%s)",
+            config.project_name,
+            config.run_id,
+            sorted(key for key in init_kwargs.keys() if key != "project"),
+            version,
+        )
         init_fn(**init_kwargs)
     except Exception as exc:
         raise RuntimeError(
