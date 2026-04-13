@@ -49,6 +49,7 @@ class LogIXEngineConfig:
     extract_kwargs: dict[str, Any]
     score_kwargs: dict[str, Any]
     test_subset_size: int | None
+    source_config_path: Path
 
 
 @dataclass(frozen=True)
@@ -181,16 +182,19 @@ def _load_config(config_path: str | Path) -> LogIXEngineConfig:
 
     top_level_project = raw.get("project_name")
     nested_project = logix_cfg.get("project")
+    init_project = init_kwargs.get("project")
     if top_level_project is not None:
         resolved_project = str(top_level_project)
     elif nested_project is not None:
         resolved_project = str(nested_project)
+    elif init_project is not None:
+        resolved_project = str(init_project)
     else:
         resolved_project = "dataset_attribution"
     if not resolved_project.strip():
         raise ValueError(
             "Invalid project configuration: resolved LogIX project is empty. "
-            "Set either top-level `project_name` or nested `logix.project` to a non-empty value."
+            "Set either top-level `project_name`, nested `logix.project`, or `logix.init.project` to a non-empty value."
         )
 
     return LogIXEngineConfig(
@@ -216,6 +220,7 @@ def _load_config(config_path: str | Path) -> LogIXEngineConfig:
         extract_kwargs={str(k): v for k, v in extract_kwargs.items()},
         score_kwargs={str(k): v for k, v in score_kwargs.items()},
         test_subset_size=test_subset_size,
+        source_config_path=path,
     )
 
 
@@ -224,6 +229,8 @@ def _build_logix_init_payload(config: LogIXEngineConfig) -> dict[str, Any]:
         "project": config.project_name,
         **config.init_kwargs,
     }
+    if "config" not in payload:
+        payload["config"] = str(config.source_config_path)
     return payload
 
 
@@ -274,7 +281,7 @@ def _init_logix(config: LogIXEngineConfig, logix_module: Any, logger: logging.Lo
     version_tuple = _parse_version(version)
 
     if version_tuple >= (0, 1, 1):
-        raw_config = payload.get("config", "./config.yaml")
+        raw_config = payload.get("config")
         payload["config"] = _coerce_pathlike_to_str(raw_config, "config")
     elif "config" not in payload:
         payload["config"] = {
