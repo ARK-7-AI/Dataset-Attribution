@@ -210,7 +210,26 @@ def _load_config(config_path: str | Path) -> LogIXEngineConfig:
         if test_subset_size <= 0:
             raise ValueError("logix.test_subset_size must be a positive integer when provided")
 
+<<<<<<< codex/analyze-project-architecture-and-plan-setup
+    top_level_project = raw.get("project_name")
+    nested_project = logix_cfg.get("project")
+    init_project = init_kwargs.get("project")
+    if top_level_project is not None:
+        resolved_project = str(top_level_project)
+    elif nested_project is not None:
+        resolved_project = str(nested_project)
+    elif init_project is not None:
+        resolved_project = str(init_project)
+    else:
+        resolved_project = "dataset_attribution"
+    if not resolved_project.strip():
+        raise ValueError(
+            "Invalid project configuration: resolved LogIX project is empty. "
+            "Set either top-level `project_name`, nested `logix.project`, or `logix.init.project` to a non-empty value."
+        )
+=======
     resolved_project = _initialize_logix(raw)
+>>>>>>> main
 
     return LogIXEngineConfig(
         run_id=run_id,

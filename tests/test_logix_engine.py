@@ -696,6 +696,45 @@ def test_logix_engine_resolves_project_from_nested_logix_project(tmp_path: Path)
     assert _OrderedLogIX.init_payload["project"] == "nested-project"
 
 
+def test_logix_engine_resolves_project_from_logix_init_project(tmp_path: Path) -> None:
+    _OrderedLogIX.events = []
+    _OrderedLogIX.init_payload = {}
+    _INITIALIZED_LOGIX_MODULE_IDS.clear()
+    run_root = tmp_path / "outputs" / "runs" / "init-project-run"
+    (run_root / "train" / "adapter").mkdir(parents=True, exist_ok=True)
+    (run_root / "train" / "tokenizer").mkdir(parents=True, exist_ok=True)
+    (run_root / "train" / "tokenizer" / "tokenizer.json").write_text("{}", encoding="utf-8")
+    _write_manifest(run_root / "splits" / "train.csv", count=2, start=0)
+    _write_manifest(run_root / "splits" / "test.csv", count=1, start=100)
+
+    config_path = tmp_path / "attribution_logix_init_project.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "run_id": "init-project-run",
+                "output_root": str(tmp_path / "outputs" / "runs"),
+                "top_k": 1,
+                "train_subset_size": 2,
+                "influence": {
+                    "mode": "ihvp",
+                    "ihvp": {
+                        "damping": 0.01,
+                        "scale": 10.0,
+                        "recursion_depth": 8,
+                        "num_samples": 1,
+                    },
+                },
+                "lora": {"lora_only": True},
+                "logix": {"init": {"project": "init-project"}, "setup": {}, "run": {}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    run_logix_engine(config_path, logix_module=_OrderedLogIX)
+    assert _OrderedLogIX.init_payload["project"] == "init-project"
+
+
 def test_logix_engine_uses_default_project_when_project_is_absent(tmp_path: Path) -> None:
     _OrderedLogIX.events = []
     _OrderedLogIX.init_payload = {}
@@ -866,6 +905,46 @@ def test_logix_engine_rejects_legacy_logix_init_mapping(tmp_path: Path) -> None:
         assert "project_name" in str(exc)
     else:
         raise AssertionError("Expected ValueError for deprecated logix.init mapping")
+
+
+def test_logix_engine_defaults_path_based_logix_config_to_engine_config_path(tmp_path: Path) -> None:
+    _PathConfigLogIX.init_payload = {}
+    _INITIALIZED_LOGIX_MODULE_IDS.clear()
+    run_root = tmp_path / "outputs" / "runs" / "path-config-default-run"
+    (run_root / "train" / "adapter").mkdir(parents=True, exist_ok=True)
+    (run_root / "train" / "tokenizer").mkdir(parents=True, exist_ok=True)
+    (run_root / "train" / "tokenizer" / "tokenizer.json").write_text("{}", encoding="utf-8")
+    _write_manifest(run_root / "splits" / "train.csv", count=2, start=0)
+    _write_manifest(run_root / "splits" / "test.csv", count=1, start=100)
+
+    config_path = tmp_path / "attribution_logix_path_default.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "run_id": "path-config-default-run",
+                "project_name": "path-config-project",
+                "output_root": str(tmp_path / "outputs" / "runs"),
+                "top_k": 1,
+                "train_subset_size": 2,
+                "influence": {
+                    "mode": "ihvp",
+                    "ihvp": {
+                        "damping": 0.01,
+                        "scale": 10.0,
+                        "recursion_depth": 8,
+                        "num_samples": 1,
+                    },
+                },
+                "lora": {"lora_only": True},
+                "logix": {"setup": {}, "run": {}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    run_logix_engine(config_path, logix_module=_PathConfigLogIX)
+    assert isinstance(_PathConfigLogIX.init_payload["config"], str)
+    assert _PathConfigLogIX.init_payload["config"] == str(config_path)
 
 
 def test_logix_engine_defaults_path_based_logix_config_to_engine_config_path(tmp_path: Path) -> None:
