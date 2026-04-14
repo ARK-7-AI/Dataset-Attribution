@@ -8,7 +8,12 @@ from pathlib import Path
 
 import yaml
 
-from src.attribution.logix_engine import _INITIALIZED_LOGIX_MODULE_IDS, run_logix_engine
+from src.attribution.logix_engine import (
+    _INITIALIZED_LOGIX_MODULE_IDS,
+    LogIXEngineConfig,
+    run_logix_engine,
+    setup_logix,
+)
 
 
 class _FakeLogIX:
@@ -107,6 +112,97 @@ class _ProjectOnlyInitLogIX:
     @staticmethod
     def run(**kwargs):
         return {"status": "ok", "num_ranked": len(kwargs.get("sample_ids", []))}
+
+
+def _make_engine_config(tmp_path: Path, setup_kwargs: dict[str, object]) -> LogIXEngineConfig:
+    return LogIXEngineConfig(
+        run_id="setup-test",
+        project_name="dataset_attribution",
+        output_root=tmp_path,
+        model_name_or_path="fake-model",
+        seed=123,
+        top_k=1,
+        train_subset_size=1,
+        influence_mode="ihvp",
+        ihvp_controls={
+            "damping": 0.01,
+            "scale": 10.0,
+            "recursion_depth": 8,
+            "num_samples": 1,
+        },
+        lora_only=True,
+        lora_adapter_path=None,
+        tokenizer_path=None,
+        train_split_path_override=None,
+        test_split_path_override=None,
+        shadow_split_path_override=None,
+        setup_kwargs=setup_kwargs,
+        run_kwargs={},
+        patch_kwargs={},
+        extract_kwargs={},
+        score_kwargs={},
+        test_subset_size=None,
+        source_config_path=tmp_path / "attribution_setup.yaml",
+    )
+
+
+def test_setup_logix_fully_compatible_setup_payload(tmp_path: Path, caplog) -> None:
+    class _CompatibleLogIX:
+        @staticmethod
+        def setup(**kwargs):
+            return {"status": "ok", "kwargs": kwargs}
+
+    config = _make_engine_config(tmp_path, {"device": "cpu"})
+    caplog.set_level("INFO")
+
+    context = setup_logix(config, tmp_path / "out", _CompatibleLogIX)
+
+    assert context["status"] == "ok"
+    assert context["kwargs"]["device"] == "cpu"
+    assert "Calling logix.setup with payload keys" in caplog.text
+    assert "falling back to legacy setup() call" not in caplog.text
+
+
+def test_setup_logix_retries_after_unexpected_kwarg_rejection(tmp_path: Path, caplog) -> None:
+    class _StrictWrapperLogIX:
+        @staticmethod
+        def setup(*, model_name_or_path: str, seed: int, output_dir: str):
+            return {
+                "model_name_or_path": model_name_or_path,
+                "seed": seed,
+                "output_dir": output_dir,
+            }
+
+    config = _make_engine_config(tmp_path, {"device": "cpu"})
+    caplog.set_level("INFO")
+
+    context = setup_logix(config, tmp_path / "out", _StrictWrapperLogIX)
+
+    assert context["model_name_or_path"] == "fake-model"
+    assert "device" not in context
+    assert "retrying without keys: ['device']" in caplog.text
+    assert "falling back to legacy setup() call" not in caplog.text
+
+
+def test_setup_logix_falls_back_to_legacy_setup_call_when_parse_fails(tmp_path: Path, caplog) -> None:
+    class _LegacyFallbackLogIX:
+        attempts = 0
+
+        @classmethod
+        def setup(cls, **kwargs):
+            cls.attempts += 1
+            if kwargs:
+                raise TypeError("got an unexpected keyword argument")
+            return {"status": "legacy-ok"}
+
+    config = _make_engine_config(tmp_path, {"device": "cpu"})
+    caplog.set_level("INFO")
+
+    context = setup_logix(config, tmp_path / "out", _LegacyFallbackLogIX)
+
+    assert context["status"] == "legacy-ok"
+    assert _LegacyFallbackLogIX.attempts == 2
+    assert "Unable to parse unsupported kwargs from logix.setup error" in caplog.text
 
 
 def _write_manifest(path: Path, count: int, start: int = 0) -> None:
