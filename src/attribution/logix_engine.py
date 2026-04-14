@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import hashlib
 import importlib
+import inspect
 import json
 import logging
 from pathlib import Path
@@ -499,55 +500,106 @@ def setup_logix(
     logix_module: Any,
 ) -> Any:
     """Prepare LogIX execution context."""
+    logger = logging.getLogger(__name__)
     payload = {
         "model_name_or_path": config.model_name_or_path,
         "seed": config.seed,
         "output_dir": str(output_dir),
         **config.setup_kwargs,
     }
+    version = str(getattr(logix_module, "__version__", "unknown"))
 
     if hasattr(logix_module, "setup") and callable(logix_module.setup):
         setup_fn = logix_module.setup
-        logger = logging.getLogger(__name__)
-        logger.info("Calling logix.setup with payload keys: %s", sorted(payload.keys()))
+        logger.info(
+            "LogIX setup API path=modern version=%s payload_keys=%s",
+            version,
+            sorted(payload.keys()),
+        )
         try:
             return setup_fn(**payload)
         except TypeError as error:
             error_text = str(error)
             if "unexpected keyword argument" not in error_text:
                 raise
-
-            dropped_keys = _parse_unexpected_kwarg_names(error_text)
-            if dropped_keys:
-                logger.warning(
-                    "logix.setup rejected unexpected kwargs; retrying without keys: %s",
-                    dropped_keys,
-                )
-                dropped_keys_set = set(dropped_keys)
-                filtered_payload = {
-                    key: value for key, value in payload.items() if key not in dropped_keys_set
-                }
-                try:
-                    return setup_fn(**filtered_payload)
-                except TypeError as retry_error:
-                    retry_error_text = str(retry_error)
-                    if "unexpected keyword argument" not in retry_error_text:
-                        raise
-                    remaining_unknown = _parse_unexpected_kwarg_names(retry_error_text)
-                    logger.warning(
-                        "logix.setup retry still rejected kwargs (%s); falling back to legacy setup() call.",
-                        remaining_unknown if remaining_unknown else "unknown",
-                    )
-                    return setup_fn()
-
-            logger.warning(
-                "Unable to parse unsupported kwargs from logix.setup error; "
-                "falling back to legacy setup() call."
+            logger.info(
+                "LogIX setup modern path rejected kwargs; attempting legacy compatibility path"
             )
-            return setup_fn()
+
+    # Legacy 0.1.1 compatibility path:
+    # - Requires `log_option_kwargs` to carry most options.
+    # - Only pass known top-level arguments for strict wrappers.
+    legacy_allowed_keys = {"model_name_or_path", "seed", "output_dir", "log_option_kwargs"}
+    legacy_log_option_kwargs = {
+        key: value for key, value in payload.items() if key not in {"model_name_or_path", "seed", "output_dir"}
+    }
+    legacy_payload = {
+        "model_name_or_path": payload["model_name_or_path"],
+        "seed": payload["seed"],
+        "output_dir": payload["output_dir"],
+        "log_option_kwargs": legacy_log_option_kwargs,
+    }
+    dropped_keys = sorted(set(payload.keys()) - legacy_allowed_keys)
+    logger.info(
+        "LogIX setup API path=legacy_0_1_1 version=%s dropped_kwargs=%s fallback_branch=%s",
+        version,
+        dropped_keys,
+        "legacy_setup_with_log_option_kwargs",
+    )
+    if hasattr(logix_module, "setup") and callable(logix_module.setup):
+        try:
+            return logix_module.setup(**legacy_payload)
+        except TypeError as error:
+            error_text = str(error)
+            if "unexpected keyword argument" not in error_text:
+                raise
+
+            strict_dropped = _parse_unexpected_kwarg_names(error_text)
+            if not strict_dropped:
+                logger.warning(
+                    "LogIX setup legacy path could not parse rejected kwargs; retrying with empty payload fallback_branch=%s",
+                    "legacy_empty_retry",
+                )
+                return logix_module.setup()
+            strict_drop_set = set(strict_dropped)
+            filtered_legacy_payload = {
+                key: value for key, value in legacy_payload.items() if key not in strict_drop_set
+            }
+            logger.warning(
+                "LogIX setup legacy path rejected kwargs; retrying with filtered payload dropped_kwargs=%s fallback_branch=%s",
+                strict_dropped,
+                "legacy_filtered_retry",
+            )
+            return logix_module.setup(**filtered_legacy_payload)
 
     # Fallback context for API variants that provide run/execute only.
+    logger.info(
+        "LogIX setup callable unavailable; returning payload context fallback_branch=payload_context_only"
+    )
     return payload
+
+
+def _filter_kwargs_for_callable(fn: Any, kwargs: Mapping[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Down-select kwargs based on callable signature when available."""
+    try:
+        signature = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return dict(kwargs), []
+
+    accepts_var_kwargs = any(
+        param.kind == inspect.Parameter.VAR_KEYWORD
+        for param in signature.parameters.values()
+    )
+    if accepts_var_kwargs:
+        return dict(kwargs), []
+
+    accepted = {
+        name for name, param in signature.parameters.items()
+        if param.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    }
+    filtered = {key: value for key, value in kwargs.items() if key in accepted}
+    dropped = sorted(key for key in kwargs.keys() if key not in accepted)
+    return filtered, dropped
 
 
 def _setup_runtime_logger(output_dir: Path) -> logging.Logger:
@@ -697,7 +749,8 @@ def execute_logix(
     logix_module: Any,
 ) -> Mapping[str, Any]:
     """Execute LogIX run and normalize output to a mapping."""
-    run_payload = {
+    logger = logging.getLogger(__name__)
+    execute_kwargs = {
         "context": context,
         "sample_ids": sample_ids[: config.train_subset_size],
         "top_k": config.top_k,
@@ -707,15 +760,74 @@ def execute_logix(
         "lora_adapter_path": str(config.lora_adapter_path) if config.lora_adapter_path else None,
         **config.run_kwargs,
     }
+    attempted_paths: list[str] = []
+    discovered_callables: list[str] = []
 
-    if hasattr(logix_module, "run") and callable(logix_module.run):
-        raw_result = logix_module.run(**run_payload)
-    elif hasattr(logix_module, "execute") and callable(logix_module.execute):
-        raw_result = logix_module.execute(**run_payload)
-    else:
+    candidates: list[tuple[str, Any]] = [
+        ("context.run", getattr(context, "run", None)),
+        ("context.execute", getattr(context, "execute", None)),
+        ("logix.run", getattr(logix_module, "run", None)),
+        ("logix.execute", getattr(logix_module, "execute", None)),
+    ]
+    # Legacy scoring method fallback: some older adapters expose scoring entry points instead of run/execute.
+    legacy_names = ("score_influence", "score", "compute_scores", "compute_influence")
+    for legacy_name in legacy_names:
+        candidates.append((f"context.{legacy_name}", getattr(context, legacy_name, None)))
+        candidates.append((f"logix.{legacy_name}", getattr(logix_module, legacy_name, None)))
+
+    raw_result: Any = None
+    selected_path: str | None = None
+    for path_name, fn in candidates:
+        if not callable(fn):
+            continue
+
+        discovered_callables.append(path_name)
+        attempted_paths.append(path_name)
+        filtered_kwargs, dropped_kwargs = _filter_kwargs_for_callable(fn, execute_kwargs)
+        if dropped_kwargs:
+            logger.info(
+                "LogIX execute path=%s dropped_kwargs=%s",
+                path_name,
+                dropped_kwargs,
+            )
+        try:
+            raw_result = fn(**filtered_kwargs)
+            selected_path = path_name
+            logger.info(
+                "LogIX execute selected_api_path=%s fallback_branch=%s",
+                selected_path,
+                "primary" if path_name in {"context.run", "context.execute", "logix.run", "logix.execute"} else "legacy_scoring_method",
+            )
+            break
+        except TypeError as error:
+            error_text = str(error)
+            if "unexpected keyword argument" not in error_text:
+                raise
+            unexpected = _parse_unexpected_kwarg_names(error_text)
+            if not unexpected:
+                raise
+            logger.warning(
+                "LogIX execute strict-kwargs rejection path=%s dropped_kwargs=%s fallback_branch=%s",
+                path_name,
+                unexpected,
+                "unexpected_kwarg_retry",
+            )
+            retry_kwargs = {key: value for key, value in filtered_kwargs.items() if key not in set(unexpected)}
+            raw_result = fn(**retry_kwargs)
+            selected_path = path_name
+            logger.info(
+                "LogIX execute selected_api_path=%s fallback_branch=strict_kwargs_retry",
+                selected_path,
+            )
+            break
+
+    if selected_path is None:
         raise AttributeError(
-            "Unsupported LogIX API surface. Expected module-level `setup` and `run` "
-            "(or `execute`) callables."
+            "Unsupported LogIX API surface for execute phase. "
+            f"Attempted paths={attempted_paths}. "
+            f"Discovered callable names={discovered_callables}. "
+            "Expected one of: context.run, context.execute, logix.run, logix.execute, "
+            "or legacy scoring methods (score_influence/score/compute_scores/compute_influence)."
         )
 
     if raw_result is None:
