@@ -271,6 +271,18 @@ bash scripts/run_step1_final_check.sh --run-id <run_id>
 bash scripts/run_step2_logix.sh --config configs/attribution_logix.yaml
 ```
 
+- Smoke config workflow (no in-place edits to `configs/attribution_logix.yaml`):
+
+```bash
+bash scripts/run_step2_logix.sh --generate-smoke-config /tmp/attribution_logix_smoke.yaml --smoke-run-id final_report_run --smoke-output-root outputs/runs
+```
+
+Then patch only `/tmp/attribution_logix_smoke.yaml` for mixed-run manifests (set `train_manifest_path`, `test_manifest_path`, and `shadow_manifest_path` to `outputs/runs/default_run/splits/*.csv`) and run:
+
+```bash
+bash scripts/run_step2_logix.sh --config /tmp/attribution_logix_smoke.yaml
+```
+
 - Expected runtime characteristics:
   - Typically longer than the gate check (often several minutes to tens of minutes) depending on model size, hardware, and `train_subset_size`.
   - Runtime is sensitive to IHVP controls (`recursion_depth`, `num_samples`) and available accelerator resources.

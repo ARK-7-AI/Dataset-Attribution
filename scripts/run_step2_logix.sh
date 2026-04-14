@@ -2,6 +2,7 @@
 set -euo pipefail
 
 CONFIG_PATH="configs/attribution_logix.yaml"
+CONFIG_EXPLICITLY_SET=0
 SMOKE_CONFIG_OUT=""
 SMOKE_RUN_ID="smoke-logix"
 SMOKE_OUTPUT_ROOT="outputs/runs"
@@ -10,6 +11,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --config)
       CONFIG_PATH="$2"
+      CONFIG_EXPLICITLY_SET=1
       shift 2
       ;;
     --generate-smoke-config)
@@ -25,12 +27,12 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     -h|--help)
-      echo "Usage: bash scripts/run_step2_logix.sh [--config <path>] [--generate-smoke-config <path>]"
+      echo "Usage: bash scripts/run_step2_logix.sh [--config <path>] [--generate-smoke-config <path>] [--smoke-run-id <id>] [--smoke-output-root <path>]"
       exit 0
       ;;
     *)
       echo "Unknown argument: $1"
-      echo "Usage: bash scripts/run_step2_logix.sh [--config <path>] [--generate-smoke-config <path>]"
+      echo "Usage: bash scripts/run_step2_logix.sh [--config <path>] [--generate-smoke-config <path>] [--smoke-run-id <id>] [--smoke-output-root <path>]"
       exit 1
       ;;
   esac
@@ -66,7 +68,10 @@ dst.parent.mkdir(parents=True, exist_ok=True)
 dst.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 print(f"[step2] Generated smoke config: {dst}")
 PY
-  CONFIG_PATH="${SMOKE_CONFIG_OUT}"
+  if [[ ${CONFIG_EXPLICITLY_SET} -eq 0 ]]; then
+    echo "[step2] Smoke config generation only. Patch manifests in ${SMOKE_CONFIG_OUT} if needed, then rerun with --config ${SMOKE_CONFIG_OUT}."
+    exit 0
+  fi
 fi
 
 if [[ ! -f "${CONFIG_PATH}" ]]; then
