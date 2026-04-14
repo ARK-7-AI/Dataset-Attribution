@@ -284,6 +284,12 @@ Then patch only `/tmp/attribution_logix_smoke.yaml` for mixed-run manifests (set
 bash scripts/run_step2_logix.sh --config /tmp/attribution_logix_smoke.yaml
 ```
 
+- Local LogIX 0.1.1 smoke/integration test command (installs editable project + pinned LogIX, generates Step2 smoke config, runs tiny attribution, and validates `topk.json`/`metadata.json`):
+
+```bash
+RUN_LOGIX_SMOKE_011=1 pytest -q tests/test_logix_smoke_011.py
+```
+
 - Expected runtime characteristics:
   - Typically longer than the gate check (often several minutes to tens of minutes) depending on model size, hardware, and `train_subset_size`.
   - Runtime is sensitive to IHVP controls (`recursion_depth`, `num_samples`) and available accelerator resources.
