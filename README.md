@@ -258,7 +258,7 @@ bash scripts/run_step1_final_check.sh --run-id <run_id>
 - Prerequisites:
   - Step 1 gate has passed for the same run.
   - `logix` Python package is installed (via project dependencies including `logix-ai`), with required contract `logix>=0.1.1`.
-  - Compatibility note (tested in this repository): the engine supports modern module-level `logix.setup(...)` + `logix.run(...)`/`logix.execute(...)` paths and legacy `0.1.1`-style setup wrappers requiring `log_option_kwargs`; execute-phase dispatch probes context/module entry points in deterministic order and retries strict-kwargs rejections after dropping unsupported keys.
+  - Compatibility note (tested in this repository): PyPI `logix-ai==0.1.1` uses a legacy instrumentation flow (`setup() -> None` plus module-level `add_analysis(...)` / `finalize(...)` and `log(...)` / `get_log(...)` APIs). Modern execute flow (`context.run`, `context.execute`, `logix.run`, `logix.execute`) requires a compatible newer LogIX build.
   - Attribution config exists (default: `configs/attribution_logix.yaml`) and points to valid run artifacts/manifests.
   - LogIX runtime initialization is required before extraction/influence calls; the engine performs explicit `logix.init(project=...)` startup using deterministic project precedence: top-level `project_name`, then `logix.project`, then fallback `dataset_attribution`.
   - Standard execution does **not** require a root-level `config.yaml` in the repository.

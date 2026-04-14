@@ -173,6 +173,46 @@ class _StrictKwargsLogIX:
         }
 
 
+class _LegacyInstrumentationLogIX:
+    __version__ = "0.1.1"
+    analyses: list[dict[str, object]] = []
+    logs: dict[str, dict[str, object]] = {}
+
+    @staticmethod
+    def init(**kwargs):
+        return kwargs
+
+    @staticmethod
+    def setup(**kwargs):
+        _ = kwargs
+        return None
+
+    @classmethod
+    def log(cls, *, split: str, sample_ids: list[str]):
+        cls.logs[split] = {"sample_ids": list(sample_ids)}
+        return cls.logs[split]
+
+    @classmethod
+    def get_log(cls, *, split: str):
+        return cls.logs.get(split, {"sample_ids": []})
+
+    @classmethod
+    def add_analysis(cls, *args, **kwargs):
+        cls.analyses.append({"args": args, "kwargs": kwargs})
+
+    @classmethod
+    def finalize(cls):
+        if not cls.analyses:
+            return {"status": "legacy-empty", "scores": {}}
+        kwargs = cls.analyses[-1]["kwargs"]
+        train_sample_ids = list(kwargs.get("train_sample_ids", []))
+        scores = {
+            test_id: {train_id: float(index + 1) for index, train_id in enumerate(train_sample_ids)}
+            for test_id in kwargs.get("test_sample_ids", [])
+        }
+        return {"status": "legacy-ok", "scores": scores}
+
+
 def _make_engine_config(tmp_path: Path, setup_kwargs: dict[str, object]) -> LogIXEngineConfig:
     return LogIXEngineConfig(
         run_id="setup-test",
@@ -284,6 +324,7 @@ def test_execute_logix_prefers_context_run_over_module_entrypoints(tmp_path: Pat
         context=_ContextRunOnly(),
         config=config,
         sample_ids=["a", "b", "c"],
+        test_sample_ids=["t1"],
         logix_module=_ModuleExecuteOnlyLogIX,
     )
 
@@ -299,6 +340,7 @@ def test_execute_logix_uses_module_execute_for_modern_api(tmp_path: Path, caplog
         context={},
         config=config,
         sample_ids=["a", "b", "c"],
+        test_sample_ids=["t1"],
         logix_module=_ModuleExecuteOnlyLogIX,
     )
 
@@ -315,12 +357,34 @@ def test_execute_logix_retries_strict_kwargs_rejection(tmp_path: Path, caplog) -
         context={},
         config=config,
         sample_ids=["a", "b", "c"],
+        test_sample_ids=["t1"],
         logix_module=_StrictKwargsLogIX,
     )
 
     assert result["status"] == "ok"
     assert result["top_k"] == 1
     assert "strict-kwargs rejection path=logix.run" in caplog.text
+
+
+def test_execute_logix_legacy_instrumentation_path(tmp_path: Path, caplog) -> None:
+    config = _make_engine_config(tmp_path, {})
+    caplog.set_level("INFO")
+    _LegacyInstrumentationLogIX.analyses = []
+    _LegacyInstrumentationLogIX.logs = {}
+    context = setup_logix(config, tmp_path / "out", _LegacyInstrumentationLogIX)
+
+    result = execute_logix(
+        context=context,
+        config=config,
+        sample_ids=["a", "b"],
+        test_sample_ids=["t1"],
+        logix_module=_LegacyInstrumentationLogIX,
+    )
+
+    assert result["status"] == "legacy-ok"
+    assert "influence_scores" in result
+    assert result["influence_scores"]["t1"]["a"] == 1.0
+    assert "selected_api_path=logix.finalize(legacy_instrumentation)" in caplog.text
 
 
 def test_execute_logix_error_lists_discovered_callables(tmp_path: Path) -> None:
@@ -338,6 +402,7 @@ def test_execute_logix_error_lists_discovered_callables(tmp_path: Path) -> None:
             context=_UnsupportedContext(),
             config=config,
             sample_ids=["a"],
+            test_sample_ids=["t1"],
             logix_module=_UnsupportedModule(),
         )
     except AttributeError as exc:
@@ -441,6 +506,51 @@ def test_logix_engine_writes_results_and_metadata(tmp_path: Path) -> None:
     assert "git_dirty" in metadata["git"]
     assert metadata["timing"]["total_seconds"] >= 0.0
     assert metadata["artifacts"]["execute_logix_result"]["status"] == "ok"
+
+
+def test_logix_engine_legacy_instrumentation_flow(tmp_path: Path) -> None:
+    run_root = tmp_path / "outputs" / "runs" / "logix-legacy"
+    (run_root / "train" / "adapter").mkdir(parents=True, exist_ok=True)
+    tokenizer_dir = run_root / "train" / "tokenizer"
+    tokenizer_dir.mkdir(parents=True, exist_ok=True)
+    (tokenizer_dir / "tokenizer.json").write_text("{}", encoding="utf-8")
+    _write_manifest(run_root / "splits" / "train.csv", count=3, start=0)
+    _write_manifest(run_root / "splits" / "test.csv", count=2, start=100)
+    _LegacyInstrumentationLogIX.analyses = []
+    _LegacyInstrumentationLogIX.logs = {}
+
+    config_path = tmp_path / "attribution_logix_legacy.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "run_id": "logix-legacy",
+                "output_root": str(tmp_path / "outputs" / "runs"),
+                "model_name_or_path": "fake-model",
+                "seed": 99,
+                "top_k": 2,
+                "train_subset_size": 3,
+                "influence": {
+                    "mode": "ihvp",
+                    "ihvp": {
+                        "damping": 0.01,
+                        "scale": 10.0,
+                        "recursion_depth": 8,
+                        "num_samples": 1,
+                    },
+                },
+                "lora": {"lora_only": True},
+                "logix": {"setup": {}, "run": {}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    artifacts = run_logix_engine(config_path, logix_module=_LegacyInstrumentationLogIX)
+    topk = json.loads(artifacts.topk_path.read_text(encoding="utf-8"))
+    metadata = json.loads(artifacts.metadata_path.read_text(encoding="utf-8"))
+    assert len(topk) == 2
+    assert metadata["artifacts"]["execute_logix_result"]["status"] == "legacy-ok"
+    assert "influence_scores" in metadata["artifacts"]["execute_logix_result"]
 
 
 def test_logix_engine_without_manifest_still_runs(tmp_path: Path) -> None:
