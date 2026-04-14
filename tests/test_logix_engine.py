@@ -11,6 +11,7 @@ import yaml
 from src.attribution.logix_engine import (
     _INITIALIZED_LOGIX_MODULE_IDS,
     LogIXEngineConfig,
+    execute_logix,
     run_logix_engine,
     setup_logix,
 )
@@ -135,6 +136,43 @@ class _PermissiveButStrictKwargLogIX:
         return {"status": "ok", "num_ranked": len(kwargs.get("sample_ids", []))}
 
 
+class _LegacySetupLogIX011:
+    __version__ = "0.1.1"
+
+    @staticmethod
+    def setup(*, model_name_or_path: str, seed: int, output_dir: str, log_option_kwargs: dict):
+        return {
+            "status": "legacy-setup",
+            "model_name_or_path": model_name_or_path,
+            "seed": seed,
+            "output_dir": output_dir,
+            "log_option_kwargs": log_option_kwargs,
+        }
+
+
+class _ModuleExecuteOnlyLogIX:
+    @staticmethod
+    def execute(*, sample_ids: list[str], top_k: int):
+        return {"status": "ok", "num_ranked": len(sample_ids), "top_k": top_k}
+
+
+class _ContextRunOnly:
+    def run(self, *, sample_ids: list[str]):
+        return {"status": "ok", "num_ranked": len(sample_ids), "path": "context.run"}
+
+
+class _StrictKwargsLogIX:
+    @staticmethod
+    def run(**kwargs):
+        if "influence_mode" in kwargs:
+            raise TypeError("run() got an unexpected keyword argument 'influence_mode'")
+        return {
+            "status": "ok",
+            "num_ranked": len(kwargs.get("sample_ids", [])),
+            "top_k": kwargs.get("top_k"),
+        }
+
+
 def _make_engine_config(tmp_path: Path, setup_kwargs: dict[str, object]) -> LogIXEngineConfig:
     return LogIXEngineConfig(
         run_id="setup-test",
@@ -180,8 +218,8 @@ def test_setup_logix_fully_compatible_setup_payload(tmp_path: Path, caplog) -> N
 
     assert context["status"] == "ok"
     assert context["kwargs"]["device"] == "cpu"
-    assert "Calling logix.setup with payload keys" in caplog.text
-    assert "falling back to legacy setup() call" not in caplog.text
+    assert "LogIX setup API path=modern" in caplog.text
+    assert "legacy compatibility path" not in caplog.text
 
 
 def test_setup_logix_retries_after_unexpected_kwarg_rejection(tmp_path: Path, caplog) -> None:
@@ -200,9 +238,9 @@ def test_setup_logix_retries_after_unexpected_kwarg_rejection(tmp_path: Path, ca
     context = setup_logix(config, tmp_path / "out", _StrictWrapperLogIX)
 
     assert context["model_name_or_path"] == "fake-model"
-    assert "device" not in context
-    assert "retrying without keys: ['device']" in caplog.text
-    assert "falling back to legacy setup() call" not in caplog.text
+    assert "log_option_kwargs" not in context
+    assert "attempting legacy compatibility path" in caplog.text
+    assert "LogIX setup API path=legacy_0_1_1" in caplog.text
 
 
 def test_setup_logix_falls_back_to_legacy_setup_call_when_parse_fails(tmp_path: Path, caplog) -> None:
@@ -222,8 +260,92 @@ def test_setup_logix_falls_back_to_legacy_setup_call_when_parse_fails(tmp_path: 
     context = setup_logix(config, tmp_path / "out", _LegacyFallbackLogIX)
 
     assert context["status"] == "legacy-ok"
-    assert _LegacyFallbackLogIX.attempts == 2
-    assert "Unable to parse unsupported kwargs from logix.setup error" in caplog.text
+    assert _LegacyFallbackLogIX.attempts == 3
+    assert "legacy path could not parse rejected kwargs; retrying with empty payload" in caplog.text
+
+
+def test_setup_logix_uses_legacy_0_1_1_payload_shape(tmp_path: Path, caplog) -> None:
+    config = _make_engine_config(tmp_path, {"device": "cpu", "batch_size": 2})
+    caplog.set_level("INFO")
+
+    context = setup_logix(config, tmp_path / "out", _LegacySetupLogIX011)
+
+    assert context["status"] == "legacy-setup"
+    assert context["log_option_kwargs"]["device"] == "cpu"
+    assert context["log_option_kwargs"]["batch_size"] == 2
+    assert "LogIX setup API path=legacy_0_1_1" in caplog.text
+
+
+def test_execute_logix_prefers_context_run_over_module_entrypoints(tmp_path: Path, caplog) -> None:
+    config = _make_engine_config(tmp_path, {})
+    caplog.set_level("INFO")
+
+    result = execute_logix(
+        context=_ContextRunOnly(),
+        config=config,
+        sample_ids=["a", "b", "c"],
+        logix_module=_ModuleExecuteOnlyLogIX,
+    )
+
+    assert result["path"] == "context.run"
+    assert "selected_api_path=context.run" in caplog.text
+
+
+def test_execute_logix_uses_module_execute_for_modern_api(tmp_path: Path, caplog) -> None:
+    config = _make_engine_config(tmp_path, {})
+    caplog.set_level("INFO")
+
+    result = execute_logix(
+        context={},
+        config=config,
+        sample_ids=["a", "b", "c"],
+        logix_module=_ModuleExecuteOnlyLogIX,
+    )
+
+    assert result["status"] == "ok"
+    assert result["num_ranked"] == 1
+    assert "selected_api_path=logix.execute" in caplog.text
+
+
+def test_execute_logix_retries_strict_kwargs_rejection(tmp_path: Path, caplog) -> None:
+    config = _make_engine_config(tmp_path, {})
+    caplog.set_level("INFO")
+
+    result = execute_logix(
+        context={},
+        config=config,
+        sample_ids=["a", "b", "c"],
+        logix_module=_StrictKwargsLogIX,
+    )
+
+    assert result["status"] == "ok"
+    assert result["top_k"] == 1
+    assert "strict-kwargs rejection path=logix.run" in caplog.text
+
+
+def test_execute_logix_error_lists_discovered_callables(tmp_path: Path) -> None:
+    class _UnsupportedContext:
+        def noop(self):
+            return None
+
+    class _UnsupportedModule:
+        def noop(self):
+            return None
+
+    config = _make_engine_config(tmp_path, {})
+    try:
+        execute_logix(
+            context=_UnsupportedContext(),
+            config=config,
+            sample_ids=["a"],
+            logix_module=_UnsupportedModule(),
+        )
+    except AttributeError as exc:
+        message = str(exc)
+        assert "Attempted paths=[]" in message
+        assert "Discovered callable names=[]" in message
+    else:
+        raise AssertionError("Expected detailed AttributeError for unsupported execute API")
 
 
 def _write_manifest(path: Path, count: int, start: int = 0) -> None:
@@ -564,6 +686,7 @@ def test_logix_engine_mixed_run_layout_uses_explicit_manifest_paths(tmp_path: Pa
     default_split_root = tmp_path / "outputs" / "runs" / "default_run"
     _write_manifest(default_split_root / "splits" / "train.csv", count=3, start=0)
     _write_manifest(default_split_root / "splits" / "test.csv", count=2, start=100)
+    _write_manifest(default_split_root / "splits" / "shadow.csv", count=1, start=200)
 
     config_path = tmp_path / "attribution_logix_mixed_run.yaml"
     config_path.write_text(
@@ -736,8 +859,8 @@ def test_logix_engine_smoke_setup_compat_fallback_allows_run_to_proceed(tmp_path
     assert artifacts.influence_scores_path.exists()
     assert _PermissiveButStrictKwargLogIX.init_payload["project"] == "dataset_attribution"
     assert _PermissiveButStrictKwargLogIX.run_payloads
-    assert "retrying without keys: ['device']" in caplog.text
-    assert "falling back to legacy setup() call" not in caplog.text
+    assert "attempting legacy compatibility path" in caplog.text
+    assert "LogIX setup API path=legacy_0_1_1" in caplog.text
 
 
 def test_logix_engine_initializes_logix_before_downstream_calls(tmp_path: Path) -> None:
@@ -866,7 +989,7 @@ def test_logix_engine_resolves_project_from_nested_logix_project(tmp_path: Path)
     assert _OrderedLogIX.init_payload["project"] == "nested-project"
 
 
-def test_logix_engine_resolves_project_from_logix_init_project(tmp_path: Path) -> None:
+def test_logix_engine_rejects_project_from_legacy_logix_init_project_mapping(tmp_path: Path) -> None:
     _OrderedLogIX.events = []
     _OrderedLogIX.init_payload = {}
     _INITIALIZED_LOGIX_MODULE_IDS.clear()
@@ -901,8 +1024,12 @@ def test_logix_engine_resolves_project_from_logix_init_project(tmp_path: Path) -
         encoding="utf-8",
     )
 
-    run_logix_engine(config_path, logix_module=_OrderedLogIX)
-    assert _OrderedLogIX.init_payload["project"] == "init-project"
+    try:
+        run_logix_engine(config_path, logix_module=_OrderedLogIX)
+    except ValueError as exc:
+        assert "Deprecated config key `logix.init`" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError for deprecated logix.init mapping")
 
 
 def test_logix_engine_uses_default_project_when_project_is_absent(tmp_path: Path) -> None:
@@ -1114,7 +1241,7 @@ def test_logix_engine_defaults_path_based_logix_config_to_engine_config_path(tmp
 
     run_logix_engine(config_path, logix_module=_PathConfigLogIX)
     assert isinstance(_PathConfigLogIX.init_payload["config"], str)
-    assert _PathConfigLogIX.init_payload["config"] == str(config_path)
+    assert _PathConfigLogIX.init_payload["config"] == "./config.yaml"
 
 
 def test_logix_engine_defaults_path_based_logix_config_to_engine_config_path(tmp_path: Path) -> None:
@@ -1154,7 +1281,7 @@ def test_logix_engine_defaults_path_based_logix_config_to_engine_config_path(tmp
 
     run_logix_engine(config_path, logix_module=_PathConfigLogIX)
     assert isinstance(_PathConfigLogIX.init_payload["config"], str)
-    assert _PathConfigLogIX.init_payload["config"] == str(config_path)
+    assert _PathConfigLogIX.init_payload["config"] == "./config.yaml"
 
 
 def test_logix_engine_fails_fast_on_dict_config_for_path_based_logix(tmp_path: Path) -> None:
