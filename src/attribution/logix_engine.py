@@ -62,6 +62,14 @@ class LogIXRunArtifacts:
 _INITIALIZED_LOGIX_MODULE_IDS: set[int] = set()
 
 
+def _parse_unexpected_kwarg_names(error_text: str) -> list[str]:
+    """Parse unexpected keyword argument names from a TypeError message."""
+    if "unexpected keyword argument" not in error_text:
+        return []
+    matches = re.findall(r"['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]", error_text)
+    return sorted(set(matches))
+
+
 def build_parser() -> ArgumentParser:
     """Build CLI parser for the LogIX engine entrypoint."""
     parser = ArgumentParser(
@@ -499,7 +507,44 @@ def setup_logix(
     }
 
     if hasattr(logix_module, "setup") and callable(logix_module.setup):
-        return logix_module.setup(**payload)
+        setup_fn = logix_module.setup
+        logger = logging.getLogger(__name__)
+        logger.info("Calling logix.setup with payload keys: %s", sorted(payload.keys()))
+        try:
+            return setup_fn(**payload)
+        except TypeError as error:
+            error_text = str(error)
+            if "unexpected keyword argument" not in error_text:
+                raise
+
+            dropped_keys = _parse_unexpected_kwarg_names(error_text)
+            if dropped_keys:
+                logger.warning(
+                    "logix.setup rejected unexpected kwargs; retrying without keys: %s",
+                    dropped_keys,
+                )
+                dropped_keys_set = set(dropped_keys)
+                filtered_payload = {
+                    key: value for key, value in payload.items() if key not in dropped_keys_set
+                }
+                try:
+                    return setup_fn(**filtered_payload)
+                except TypeError as retry_error:
+                    retry_error_text = str(retry_error)
+                    if "unexpected keyword argument" not in retry_error_text:
+                        raise
+                    remaining_unknown = _parse_unexpected_kwarg_names(retry_error_text)
+                    logger.warning(
+                        "logix.setup retry still rejected kwargs (%s); falling back to legacy setup() call.",
+                        remaining_unknown if remaining_unknown else "unknown",
+                    )
+                    return setup_fn()
+
+            logger.warning(
+                "Unable to parse unsupported kwargs from logix.setup error; "
+                "falling back to legacy setup() call."
+            )
+            return setup_fn()
 
     # Fallback context for API variants that provide run/execute only.
     return payload
