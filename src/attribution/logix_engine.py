@@ -753,6 +753,16 @@ def execute_logix(
 ) -> Mapping[str, Any]:
     """Execute LogIX run and normalize output to a mapping."""
     logger = logging.getLogger(__name__)
+    module_callable_names: list[str] = []
+    for name in dir(logix_module):
+        if name.startswith("_"):
+            continue
+        try:
+            if callable(getattr(logix_module, name)):
+                module_callable_names.append(name)
+        except Exception:
+            continue
+
     execute_kwargs = {
         "context": context,
         "sample_ids": sample_ids[: config.train_subset_size],
@@ -782,22 +792,43 @@ def execute_logix(
     raw_result: Any = None
     selected_path: str | None = None
     legacy_mode = isinstance(context, Mapping) and context.get("__logix_mode__") == _LEGACY_INSTRUMENTATION_MODE
+    legacy_module_mode = (
+        context is None
+        and callable(getattr(logix_module, "add_analysis", None))
+        and callable(getattr(logix_module, "finalize", None))
+    )
 
-    if legacy_mode:
-        module_log = getattr(logix_module, "log", None)
-        if callable(module_log):
-            module_log(split="train", sample_ids=sample_ids[: config.train_subset_size])
-            module_log(split="test", sample_ids=test_sample_ids)
-        module_get_log = getattr(logix_module, "get_log", None)
-        train_log = module_get_log(split="train") if callable(module_get_log) else None
-        test_log = module_get_log(split="test") if callable(module_get_log) else None
-
+    if legacy_mode or legacy_module_mode:
         add_analysis = getattr(logix_module, "add_analysis", None)
         finalize = getattr(logix_module, "finalize", None)
         if not callable(add_analysis) or not callable(finalize):
             raise AttributeError(
                 "Legacy instrumentation mode requires logix.add_analysis(...) and logix.finalize(...)."
             )
+
+        module_log = getattr(logix_module, "log", None)
+        if callable(module_log):
+            log_train_kwargs, _ = _filter_kwargs_for_callable(
+                module_log,
+                {"split": "train", "sample_ids": sample_ids[: config.train_subset_size]},
+            )
+            if log_train_kwargs:
+                module_log(**log_train_kwargs)
+            log_test_kwargs, _ = _filter_kwargs_for_callable(
+                module_log,
+                {"split": "test", "sample_ids": test_sample_ids},
+            )
+            if log_test_kwargs:
+                module_log(**log_test_kwargs)
+
+        module_get_log = getattr(logix_module, "get_log", None)
+        train_log: Any = None
+        test_log: Any = None
+        if callable(module_get_log):
+            get_log_train_kwargs, _ = _filter_kwargs_for_callable(module_get_log, {"split": "train"})
+            get_log_test_kwargs, _ = _filter_kwargs_for_callable(module_get_log, {"split": "test"})
+            train_log = module_get_log(**get_log_train_kwargs)
+            test_log = module_get_log(**get_log_test_kwargs)
 
         analyzer = getattr(logix_module, "DatasetAttributionAnalyzer", None)
         analysis_kwargs = {
@@ -810,12 +841,25 @@ def execute_logix(
             "test_sample_ids": test_sample_ids,
             **config.score_kwargs,
         }
+        add_analysis_kwargs, _ = _filter_kwargs_for_callable(add_analysis, analysis_kwargs)
         if analyzer is None:
-            add_analysis(**analysis_kwargs)
+            add_analysis(**add_analysis_kwargs)
         else:
-            add_analysis(analyzer, **analysis_kwargs)
-        raw_result = finalize()
-        selected_path = "logix.finalize(legacy_instrumentation)"
+            add_analysis(analyzer, **add_analysis_kwargs)
+
+        finalize_kwargs, _ = _filter_kwargs_for_callable(
+            finalize,
+            {
+                "sample_ids": sample_ids[: config.train_subset_size],
+                "test_sample_ids": test_sample_ids,
+                "top_k": config.top_k,
+                "influence_mode": config.influence_mode,
+                "ihvp_controls": config.ihvp_controls,
+                **config.run_kwargs,
+            },
+        )
+        raw_result = finalize(**finalize_kwargs)
+        selected_path = "logix.finalize(legacy_module)" if legacy_module_mode else "logix.finalize(legacy_instrumentation)"
         logger.info("LogIX execute selected_api_path=%s", selected_path)
 
     for path_name, fn in candidates:
@@ -869,20 +913,50 @@ def execute_logix(
             "Unsupported LogIX API surface for execute phase. "
             f"Attempted paths={attempted_paths}. "
             f"Discovered callable names={discovered_callables}. "
+            f"Module callable inventory={module_callable_names}. "
             "Expected one of: context.run, context.execute, logix.run, logix.execute, "
             "or legacy scoring methods (score_influence/score/compute_scores/compute_influence)."
         )
 
     if raw_result is None:
         return {"status": "ok", "num_samples": len(sample_ids)}
-    if not isinstance(raw_result, Mapping):
+    if not isinstance(raw_result, Mapping) and not (legacy_mode or legacy_module_mode):
         raise ValueError("LogIX run result must be a mapping")
-    normalized_result = dict(raw_result)
-    if legacy_mode and "influence_scores" not in normalized_result:
+
+    normalized_result = dict(raw_result) if isinstance(raw_result, Mapping) else {"legacy_result": raw_result}
+    if legacy_mode or legacy_module_mode:
+        accessor_candidates = (
+            "get_influence_scores",
+            "get_scores",
+            "get_result",
+            "get_results",
+            "get_output",
+            "get_outputs",
+            "get_topk",
+            "get_metadata",
+            "get_log",
+        )
+        for accessor_name in accessor_candidates:
+            accessor = getattr(logix_module, accessor_name, None)
+            if not callable(accessor):
+                continue
+            accessor_kwargs, _ = _filter_kwargs_for_callable(accessor, {})
+            try:
+                accessor_value = accessor(**accessor_kwargs)
+            except TypeError:
+                continue
+            if accessor_value is not None and accessor_name not in normalized_result:
+                normalized_result[accessor_name] = accessor_value
+
+    if (legacy_mode or legacy_module_mode) and "influence_scores" not in normalized_result:
         if isinstance(normalized_result.get("scores"), Mapping):
             normalized_result["influence_scores"] = normalized_result["scores"]
         elif isinstance(normalized_result.get("result"), Mapping):
             normalized_result["influence_scores"] = normalized_result["result"]
+        elif isinstance(normalized_result.get("get_influence_scores"), Mapping):
+            normalized_result["influence_scores"] = normalized_result["get_influence_scores"]
+        elif isinstance(normalized_result.get("get_scores"), Mapping):
+            normalized_result["influence_scores"] = normalized_result["get_scores"]
     return normalized_result
 
 
