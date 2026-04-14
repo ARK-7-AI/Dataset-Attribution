@@ -37,6 +37,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -n "${SMOKE_CONFIG_OUT}" ]]; then
+  # No source patching required; engine initializes with logix.init(project=project_name).
+  # For mixed-run layouts, set run_id and explicit *_manifest_path overrides in the generated config.
   python - <<'PY' "${SMOKE_CONFIG_OUT}" "${SMOKE_RUN_ID}" "${SMOKE_OUTPUT_ROOT}"
 from pathlib import Path
 import sys
