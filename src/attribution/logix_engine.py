@@ -384,6 +384,23 @@ def _validate_required_inputs(config: LogIXEngineConfig) -> None:
         )
 
 
+def _validate_shadow_manifest_override(
+    config: LogIXEngineConfig, logger: logging.Logger
+) -> None:
+    """Validate/document current shadow split behavior for LogIX engine path."""
+    if config.shadow_split_path_override is None:
+        return
+
+    shadow_path = config.shadow_split_path_override
+    if not shadow_path.exists():
+        raise FileNotFoundError(
+            "shadow_manifest_path was provided but does not exist: "
+            f"{shadow_path}"
+        )
+
+    logger.info("shadow split override currently unused by scoring pipeline")
+
+
 def _import_logix_module() -> Any:
     try:
         return importlib.import_module("logix")
@@ -691,6 +708,7 @@ def run_logix_engine(config_path: str | Path, logix_module: Any | None = None) -
     print(f"[startup] effective run_id: {config.run_id}")
     logger.info("Effective LogIX project=%s run_id=%s",
                 config.project_name, config.run_id)
+    _validate_shadow_manifest_override(config=config, logger=logger)
 
     run_start = time.perf_counter()
     setup_start = time.perf_counter()

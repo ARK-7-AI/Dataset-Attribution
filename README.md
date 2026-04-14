@@ -263,6 +263,7 @@ bash scripts/run_step1_final_check.sh --run-id <run_id>
   - Standard execution does **not** require a root-level `config.yaml` in the repository.
   - Canonical initialization keys are `project_name` (preferred) or `logix.project`. Legacy `logix.init` usage is deprecated and rejected by the engine.
   - The engine fails fast when the resolved LogIX project is empty/invalid and logs effective `project` + `run_id` at startup.
+  - `shadow_manifest_path` is currently informational-only in this LogIX engine path (validated for existence and logged), and is not threaded into scoring payloads.
   - Default behavior uses one `run_id` for splits and training artifacts, but mixed-run layouts are supported when explicit manifest paths are set (for example: training artifacts from `final_report_run` with split CSVs from `default_run`).
 - Exact command:
 
