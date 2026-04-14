@@ -61,6 +61,7 @@ class LogIXRunArtifacts:
 
 
 _INITIALIZED_LOGIX_MODULE_IDS: set[int] = set()
+_LEGACY_INSTRUMENTATION_MODE = "legacy_instrumentation"
 
 
 def _parse_unexpected_kwarg_names(error_text: str) -> list[str]:
@@ -517,7 +518,20 @@ def setup_logix(
             sorted(payload.keys()),
         )
         try:
-            return setup_fn(**payload)
+            setup_result = setup_fn(**payload)
+            if (
+                setup_result is None
+                and callable(getattr(logix_module, "add_analysis", None))
+                and callable(getattr(logix_module, "finalize", None))
+            ):
+                logger.info(
+                    "LogIX setup detected legacy instrumentation mode (setup returned None)"
+                )
+                return {
+                    "__logix_mode__": _LEGACY_INSTRUMENTATION_MODE,
+                    "setup_payload": payload,
+                }
+            return setup_result
         except TypeError as error:
             error_text = str(error)
             if "unexpected keyword argument" not in error_text:
@@ -746,6 +760,7 @@ def execute_logix(
     context: Any,
     config: LogIXEngineConfig,
     sample_ids: list[str],
+    test_sample_ids: list[str],
     logix_module: Any,
 ) -> Mapping[str, Any]:
     """Execute LogIX run and normalize output to a mapping."""
@@ -753,6 +768,7 @@ def execute_logix(
     execute_kwargs = {
         "context": context,
         "sample_ids": sample_ids[: config.train_subset_size],
+        "test_sample_ids": test_sample_ids,
         "top_k": config.top_k,
         "influence_mode": config.influence_mode,
         "ihvp_controls": config.ihvp_controls,
@@ -777,7 +793,46 @@ def execute_logix(
 
     raw_result: Any = None
     selected_path: str | None = None
+    legacy_mode = isinstance(context, Mapping) and context.get("__logix_mode__") == _LEGACY_INSTRUMENTATION_MODE
+
+    if legacy_mode:
+        module_log = getattr(logix_module, "log", None)
+        if callable(module_log):
+            module_log(split="train", sample_ids=sample_ids[: config.train_subset_size])
+            module_log(split="test", sample_ids=test_sample_ids)
+        module_get_log = getattr(logix_module, "get_log", None)
+        train_log = module_get_log(split="train") if callable(module_get_log) else None
+        test_log = module_get_log(split="test") if callable(module_get_log) else None
+
+        add_analysis = getattr(logix_module, "add_analysis", None)
+        finalize = getattr(logix_module, "finalize", None)
+        if not callable(add_analysis) or not callable(finalize):
+            raise AttributeError(
+                "Legacy instrumentation mode requires logix.add_analysis(...) and logix.finalize(...)."
+            )
+
+        analyzer = getattr(logix_module, "DatasetAttributionAnalyzer", None)
+        analysis_kwargs = {
+            "top_k": config.top_k,
+            "influence_mode": config.influence_mode,
+            "ihvp_controls": config.ihvp_controls,
+            "train_log": train_log,
+            "test_log": test_log,
+            "train_sample_ids": sample_ids[: config.train_subset_size],
+            "test_sample_ids": test_sample_ids,
+            **config.score_kwargs,
+        }
+        if analyzer is None:
+            add_analysis(**analysis_kwargs)
+        else:
+            add_analysis(analyzer, **analysis_kwargs)
+        raw_result = finalize()
+        selected_path = "logix.finalize(legacy_instrumentation)"
+        logger.info("LogIX execute selected_api_path=%s", selected_path)
+
     for path_name, fn in candidates:
+        if selected_path is not None:
+            break
         if not callable(fn):
             continue
 
@@ -834,7 +889,13 @@ def execute_logix(
         return {"status": "ok", "num_samples": len(sample_ids)}
     if not isinstance(raw_result, Mapping):
         raise ValueError("LogIX run result must be a mapping")
-    return dict(raw_result)
+    normalized_result = dict(raw_result)
+    if legacy_mode and "influence_scores" not in normalized_result:
+        if isinstance(normalized_result.get("scores"), Mapping):
+            normalized_result["influence_scores"] = normalized_result["scores"]
+        elif isinstance(normalized_result.get("result"), Mapping):
+            normalized_result["influence_scores"] = normalized_result["result"]
+    return normalized_result
 
 
 def run_logix_engine(config_path: str | Path, logix_module: Any | None = None) -> LogIXRunArtifacts:
@@ -977,8 +1038,19 @@ def run_logix_engine(config_path: str | Path, logix_module: Any | None = None) -
 
     execute_start = time.perf_counter()
     result = execute_logix(
-        context, config=config, sample_ids=train_subset_ids, logix_module=logix_module)
+        context,
+        config=config,
+        sample_ids=train_subset_ids,
+        test_sample_ids=test_sample_ids,
+        logix_module=logix_module,
+    )
     execute_elapsed = time.perf_counter() - execute_start
+
+    result_scores = result.get("influence_scores") if isinstance(result, Mapping) else None
+    if isinstance(result_scores, Mapping):
+        influence_scores = {str(k): {str(inner_k): float(inner_v) for inner_k, inner_v in dict(v).items()}
+                            for k, v in result_scores.items()}
+        top_rankings = _top_k_rankings(influence_scores, config.top_k)
 
     influence_scores_path = _write_influence_scores_csv(
         output_dir, influence_scores)
