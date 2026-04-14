@@ -114,6 +114,27 @@ class _ProjectOnlyInitLogIX:
         return {"status": "ok", "num_ranked": len(kwargs.get("sample_ids", []))}
 
 
+class _PermissiveButStrictKwargLogIX:
+    init_payload: dict[str, object] = {}
+    run_payloads: list[dict[str, object]] = []
+
+    @classmethod
+    def init(cls, **kwargs):
+        cls.init_payload = dict(kwargs)
+        return cls.init_payload
+
+    @staticmethod
+    def setup(*args, **kwargs):
+        if "device" in kwargs:
+            raise TypeError("setup() got an unexpected keyword argument 'device'")
+        return {"session": "compat-ok", "kwargs": kwargs}
+
+    @classmethod
+    def run(cls, **kwargs):
+        cls.run_payloads.append(dict(kwargs))
+        return {"status": "ok", "num_ranked": len(kwargs.get("sample_ids", []))}
+
+
 def _make_engine_config(tmp_path: Path, setup_kwargs: dict[str, object]) -> LogIXEngineConfig:
     return LogIXEngineConfig(
         run_id="setup-test",
@@ -664,6 +685,59 @@ def test_logix_engine_tiny_smoke_flow_is_deterministic(tmp_path: Path) -> None:
         encoding="utf-8"
     )
     assert first.topk_path.read_text(encoding="utf-8") == second.topk_path.read_text(encoding="utf-8")
+
+
+def test_logix_engine_smoke_setup_compat_fallback_allows_run_to_proceed(tmp_path: Path, caplog) -> None:
+    _PermissiveButStrictKwargLogIX.init_payload = {}
+    _PermissiveButStrictKwargLogIX.run_payloads = []
+    _INITIALIZED_LOGIX_MODULE_IDS.clear()
+    output_root = tmp_path / "outputs" / "runs"
+    run_id = "compat-smoke"
+    run_root = output_root / run_id
+    (run_root / "train" / "adapter").mkdir(parents=True, exist_ok=True)
+    (run_root / "train" / "tokenizer").mkdir(parents=True, exist_ok=True)
+    (run_root / "train" / "tokenizer" / "tokenizer.json").write_text("{}", encoding="utf-8")
+    _write_manifest(run_root / "splits" / "train.csv", count=3, start=0)
+    _write_manifest(run_root / "splits" / "test.csv", count=2, start=100)
+
+    config_path = tmp_path / "attribution_logix_compat_smoke.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "run_id": run_id,
+                "output_root": str(output_root),
+                "model_name_or_path": "fake-model",
+                "seed": 2026,
+                "top_k": 1,
+                "train_subset_size": 3,
+                "influence": {
+                    "mode": "ihvp",
+                    "ihvp": {
+                        "damping": 0.01,
+                        "scale": 10.0,
+                        "recursion_depth": 4,
+                        "num_samples": 1,
+                    },
+                },
+                "lora": {"lora_only": True},
+                "logix": {
+                    "setup": {"device": "cpu", "compat_mode": "legacy"},
+                    "run": {},
+                    "test_subset_size": 2,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    caplog.set_level("INFO")
+    artifacts = run_logix_engine(config_path, logix_module=_PermissiveButStrictKwargLogIX)
+
+    assert artifacts.influence_scores_path.exists()
+    assert _PermissiveButStrictKwargLogIX.init_payload["project"] == "dataset_attribution"
+    assert _PermissiveButStrictKwargLogIX.run_payloads
+    assert "retrying without keys: ['device']" in caplog.text
+    assert "falling back to legacy setup() call" not in caplog.text
 
 
 def test_logix_engine_initializes_logix_before_downstream_calls(tmp_path: Path) -> None:
