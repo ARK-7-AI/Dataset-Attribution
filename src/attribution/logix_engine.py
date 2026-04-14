@@ -509,9 +509,43 @@ def setup_logix(
         **config.setup_kwargs,
     }
     version = str(getattr(logix_module, "__version__", "unknown"))
+    version_tuple = _parse_version(version)
 
-    if hasattr(logix_module, "setup") and callable(logix_module.setup):
-        setup_fn = logix_module.setup
+    setup_fn = getattr(logix_module, "setup", None)
+    if callable(setup_fn):
+        try:
+            signature = inspect.signature(setup_fn)
+            accepts_var_kwargs = any(
+                param.kind == inspect.Parameter.VAR_KEYWORD
+                for param in signature.parameters.values()
+            )
+            accepted_names = set(signature.parameters)
+            surface_mismatch = (
+                not accepts_var_kwargs
+                and any(
+                    key not in accepted_names
+                    for key in ("model_name_or_path", "seed", "output_dir")
+                )
+            )
+        except (TypeError, ValueError):
+            surface_mismatch = False
+
+        if version_tuple[:3] == (0, 1, 1) or surface_mismatch:
+            raw_log_option_kwargs = config.setup_kwargs.get("log_option_kwargs", {})
+            log_option_kwargs = (
+                dict(raw_log_option_kwargs)
+                if isinstance(raw_log_option_kwargs, Mapping)
+                else {}
+            )
+            logger.info("Using legacy setup path for logix-ai 0.1.1")
+            logger.info(
+                "LogIX setup API path=legacy_0_1_1 version=%s parsed_version=%s surface_mismatch=%s",
+                version,
+                version_tuple,
+                surface_mismatch,
+            )
+            return setup_fn(log_option_kwargs=log_option_kwargs)
+
         logger.info(
             "LogIX setup API path=modern version=%s payload_keys=%s",
             version,
@@ -539,52 +573,6 @@ def setup_logix(
             logger.info(
                 "LogIX setup modern path rejected kwargs; attempting legacy compatibility path"
             )
-
-    # Legacy 0.1.1 compatibility path:
-    # - Requires `log_option_kwargs` to carry most options.
-    # - Only pass known top-level arguments for strict wrappers.
-    legacy_allowed_keys = {"model_name_or_path", "seed", "output_dir", "log_option_kwargs"}
-    legacy_log_option_kwargs = {
-        key: value for key, value in payload.items() if key not in {"model_name_or_path", "seed", "output_dir"}
-    }
-    legacy_payload = {
-        "model_name_or_path": payload["model_name_or_path"],
-        "seed": payload["seed"],
-        "output_dir": payload["output_dir"],
-        "log_option_kwargs": legacy_log_option_kwargs,
-    }
-    dropped_keys = sorted(set(payload.keys()) - legacy_allowed_keys)
-    logger.info(
-        "LogIX setup API path=legacy_0_1_1 version=%s dropped_kwargs=%s fallback_branch=%s",
-        version,
-        dropped_keys,
-        "legacy_setup_with_log_option_kwargs",
-    )
-    if hasattr(logix_module, "setup") and callable(logix_module.setup):
-        try:
-            return logix_module.setup(**legacy_payload)
-        except TypeError as error:
-            error_text = str(error)
-            if "unexpected keyword argument" not in error_text:
-                raise
-
-            strict_dropped = _parse_unexpected_kwarg_names(error_text)
-            if not strict_dropped:
-                logger.warning(
-                    "LogIX setup legacy path could not parse rejected kwargs; retrying with empty payload fallback_branch=%s",
-                    "legacy_empty_retry",
-                )
-                return logix_module.setup()
-            strict_drop_set = set(strict_dropped)
-            filtered_legacy_payload = {
-                key: value for key, value in legacy_payload.items() if key not in strict_drop_set
-            }
-            logger.warning(
-                "LogIX setup legacy path rejected kwargs; retrying with filtered payload dropped_kwargs=%s fallback_branch=%s",
-                strict_dropped,
-                "legacy_filtered_retry",
-            )
-            return logix_module.setup(**filtered_legacy_payload)
 
     # Fallback context for API variants that provide run/execute only.
     logger.info(
