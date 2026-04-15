@@ -604,6 +604,41 @@ def _filter_kwargs_for_callable(fn: Any, kwargs: Mapping[str, Any]) -> tuple[dic
     return filtered, dropped
 
 
+def _invoke_with_unexpected_kwarg_fallback(
+    *,
+    fn: Any,
+    fn_path: str,
+    payload: Mapping[str, Any],
+    logger: logging.Logger,
+    required_retained_keys: Sequence[str] = (),
+) -> Any:
+    """Invoke a callable and retry after unexpected-kwarg rejection."""
+    filtered_kwargs, _ = _filter_kwargs_for_callable(fn, payload)
+    try:
+        return fn(**filtered_kwargs)
+    except TypeError as error:
+        error_text = str(error)
+        if "unexpected keyword argument" not in error_text:
+            raise
+        removed_kwargs = _parse_unexpected_kwarg_names(error_text)
+        if not removed_kwargs:
+            raise
+        retry_kwargs = {
+            key: value for key, value in filtered_kwargs.items() if key not in set(removed_kwargs)
+        }
+        retained = sorted(
+            key for key in retry_kwargs.keys()
+            if not required_retained_keys or key in set(required_retained_keys)
+        )
+        logger.warning(
+            "LogIX legacy compatibility fallback activated callable=%s removed_kwargs=%s retained_kwargs=%s",
+            fn_path,
+            removed_kwargs,
+            retained,
+        )
+        return fn(**retry_kwargs)
+
+
 def _setup_runtime_logger(output_dir: Path) -> logging.Logger:
     logger = logging.getLogger(f"logix_engine.{output_dir}")
     logger.handlers.clear()
@@ -808,27 +843,37 @@ def execute_logix(
 
         module_log = getattr(logix_module, "log", None)
         if callable(module_log):
-            log_train_kwargs, _ = _filter_kwargs_for_callable(
-                module_log,
-                {"split": "train", "sample_ids": sample_ids[: config.train_subset_size]},
+            _invoke_with_unexpected_kwarg_fallback(
+                fn=module_log,
+                fn_path="logix.log",
+                payload={"split": "train", "sample_ids": sample_ids[: config.train_subset_size]},
+                logger=logger,
+                required_retained_keys=("sample_ids",),
             )
-            if log_train_kwargs:
-                module_log(**log_train_kwargs)
-            log_test_kwargs, _ = _filter_kwargs_for_callable(
-                module_log,
-                {"split": "test", "sample_ids": test_sample_ids},
+            _invoke_with_unexpected_kwarg_fallback(
+                fn=module_log,
+                fn_path="logix.log",
+                payload={"split": "test", "sample_ids": test_sample_ids},
+                logger=logger,
+                required_retained_keys=("sample_ids",),
             )
-            if log_test_kwargs:
-                module_log(**log_test_kwargs)
 
         module_get_log = getattr(logix_module, "get_log", None)
         train_log: Any = None
         test_log: Any = None
         if callable(module_get_log):
-            get_log_train_kwargs, _ = _filter_kwargs_for_callable(module_get_log, {"split": "train"})
-            get_log_test_kwargs, _ = _filter_kwargs_for_callable(module_get_log, {"split": "test"})
-            train_log = module_get_log(**get_log_train_kwargs)
-            test_log = module_get_log(**get_log_test_kwargs)
+            train_log = _invoke_with_unexpected_kwarg_fallback(
+                fn=module_get_log,
+                fn_path="logix.get_log",
+                payload={"split": "train"},
+                logger=logger,
+            )
+            test_log = _invoke_with_unexpected_kwarg_fallback(
+                fn=module_get_log,
+                fn_path="logix.get_log",
+                payload={"split": "test"},
+                logger=logger,
+            )
 
         analyzer = getattr(logix_module, "DatasetAttributionAnalyzer", None)
         analysis_kwargs = {
