@@ -41,6 +41,7 @@ class LogIXEngineConfig:
     train_split_path_override: Path | None
     test_split_path_override: Path | None
     shadow_split_path_override: Path | None
+    init_config_path: Path | None
     setup_kwargs: dict[str, Any]
     run_kwargs: dict[str, Any]
     patch_kwargs: dict[str, Any]
@@ -208,6 +209,23 @@ def _load_config(config_path: str | Path) -> LogIXEngineConfig:
     logix_cfg = raw.get("logix", {}) or {}
     if not isinstance(logix_cfg, dict):
         raise ValueError("logix must be a mapping")
+    init_config_path_raw = logix_cfg.get("init_config_path")
+    if init_config_path_raw is None:
+        init_config_path_raw = logix_cfg.get("config_path")
+
+    init_config_path: Path | None = None
+    if init_config_path_raw is not None:
+        init_config_candidate = Path(str(init_config_path_raw))
+        if init_config_candidate.is_absolute():
+            init_config_path = init_config_candidate
+        else:
+            config_dir_candidate = path.parent / init_config_candidate
+            cwd_candidate = Path.cwd() / init_config_candidate
+            init_config_path = (
+                config_dir_candidate
+                if config_dir_candidate.exists() or not cwd_candidate.exists()
+                else cwd_candidate
+            )
 
     setup_kwargs = logix_cfg.get("setup", {}) or {}
     run_kwargs = logix_cfg.get("run", {}) or {}
@@ -252,6 +270,7 @@ def _load_config(config_path: str | Path) -> LogIXEngineConfig:
         train_split_path_override=train_split_path_override,
         test_split_path_override=test_split_path_override,
         shadow_split_path_override=shadow_split_path_override,
+        init_config_path=init_config_path,
         setup_kwargs={str(k): v for k, v in setup_kwargs.items()},
         run_kwargs={str(k): v for k, v in run_kwargs.items()},
         patch_kwargs={str(k): v for k, v in patch_kwargs.items()},
@@ -300,15 +319,60 @@ def _init_logix(config: LogIXEngineConfig, logix_module: Any, logger: logging.Lo
     version = str(getattr(logix_module, "__version__", "unknown"))
     version_tuple = _parse_version(version)
 
+    init_payload: dict[str, Any] = {"project": project}
+    accepted_init_kwargs: set[str] = set()
+    accepts_init_var_kwargs = False
+    try:
+        init_signature = inspect.signature(init_fn)
+        accepted_init_kwargs = {
+            name
+            for name, param in init_signature.parameters.items()
+            if param.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        }
+        accepts_init_var_kwargs = any(
+            param.kind == inspect.Parameter.VAR_KEYWORD for param in init_signature.parameters.values()
+        )
+    except (TypeError, ValueError):
+        accepts_init_var_kwargs = True
+
+    init_supports_config = "config" in accepted_init_kwargs or accepts_init_var_kwargs
+    selected_init_config = config.init_config_path
+
+    if config.init_config_path is not None:
+        if not config.init_config_path.exists():
+            raise FileNotFoundError(
+                "LogIX init config file is missing before calling `logix.init(...)`: "
+                f"{config.init_config_path}. Set `logix.init_config_path` (or `logix.config_path`) "
+                "in your attribution YAML to a valid file path."
+            )
+        if init_supports_config:
+            selected_init_config = config.init_config_path
+        else:
+            logger.warning(
+                "Configured logix.init_config_path was provided but installed logix.init does not accept `config`; continuing with project-only init."
+            )
+            selected_init_config = None
+    elif version_tuple[:3] == (0, 1, 1) and "config" in accepted_init_kwargs:
+        implicit_default = Path("./config.yaml")
+        if not implicit_default.exists():
+            raise FileNotFoundError(
+                "Installed logix-ai appears to expect an implicit `./config.yaml`, but that file is missing: "
+                f"{implicit_default}. Set `logix.init_config_path` (or `logix.config_path`) in YAML to an existing config file."
+            )
+        selected_init_config = implicit_default
+
+    if selected_init_config is not None and init_supports_config:
+        init_payload["config"] = str(selected_init_config)
+
     logger.info(
-        "Calling logix.init(project=%s) with installed LogIX version=%s parsed_version=%s",
-        project,
+        "Calling logix.init with payload_keys=%s installed LogIX version=%s parsed_version=%s",
+        sorted(init_payload.keys()),
         version,
         version_tuple,
     )
 
     try:
-        init_fn(project=project)
+        init_fn(**init_payload)
     except Exception as exc:
         raise RuntimeError(
             "Failed to initialize LogIX via `logix.init(...)`. "
@@ -391,6 +455,13 @@ def _validate_required_inputs(config: LogIXEngineConfig) -> None:
             + "\n".join(missing_paths)
             + "\nSuggested fix: use the same run_id for splits, training artifacts, and attribution; "
             "or set train_manifest_path/test_manifest_path overrides for mixed-run setups."
+        )
+
+    if config.init_config_path is not None and not config.init_config_path.exists():
+        raise FileNotFoundError(
+            "logix.init_config_path was provided but file does not exist: "
+            f"{config.init_config_path}. "
+            "Set `logix.init_config_path` (or alias `logix.config_path`) in YAML to an existing file."
         )
 
 
@@ -1186,6 +1257,9 @@ def run_logix_engine(config_path: str | Path, logix_module: Any | None = None) -
         ),
         "shadow_manifest_path_override": (
             str(config.shadow_split_path_override) if config.shadow_split_path_override else None
+        ),
+        "logix_init_config_path": (
+            str(config.init_config_path) if config.init_config_path else None
         ),
         "tokenizer_path": str(config.tokenizer_path) if config.tokenizer_path else None,
         "sample_id_mapping_size": len(resolved.sample_id_to_train_index),

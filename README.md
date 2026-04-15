@@ -264,8 +264,8 @@ bash scripts/run_step1_final_check.sh --run-id <run_id>
 
 | Installed package | Behavior path used by Step 2 | Config key expectations | Validation status in this repo |
 | --- | --- | --- | --- |
-| `logix-ai==0.1.1` | **Legacy behavior path** | Uses `logix.setup`/`logix.run` placeholders and module-level `log(...)`, `get_log(...)`, `add_analysis(...)`, `finalize(...)` APIs; top-level `project_name` (or fallback `logix.project`) is still required for `logix.init(...)`. | Explicit smoke/integration coverage via `tests/test_logix_smoke_011.py`. |
-| Newer `logix-ai` (anything not `0.1.1`) | **Modern behavior path** | Expected to support modern execute flow (`context.run`, `context.execute`, `logix.run`, `logix.execute`) while keeping `project_name`/`logix.project` initialization contract. | Supported by engine compatibility shims, but you should verify in your environment before report-grade runs. |
+| `logix-ai==0.1.1` | **Legacy behavior path** | Uses `logix.setup`/`logix.run` placeholders and module-level `log(...)`, `get_log(...)`, `add_analysis(...)`, `finalize(...)` APIs; top-level `project_name` (or fallback `logix.project`) is still required for `logix.init(...)`. If your installed `init(...)` expects a config file path, set `logix.init_config_path` (alias: `logix.config_path`) explicitly. | Explicit smoke/integration coverage via `tests/test_logix_smoke_011.py`. |
+| Newer `logix-ai` (anything not `0.1.1`) | **Modern behavior path** | Expected to support modern execute flow (`context.run`, `context.execute`, `logix.run`, `logix.execute`) while keeping `project_name`/`logix.project` initialization contract. `logix.init_config_path` is optional and passed only when supported by `logix.init(...)`. | Supported by engine compatibility shims, but you should verify in your environment before report-grade runs. |
 
 #### Dependency policy decision (`pyproject.toml`)
 
@@ -275,7 +275,8 @@ bash scripts/run_step1_final_check.sh --run-id <run_id>
   - For deterministic reproduction of the legacy path, install `logix-ai==0.1.1` explicitly in your environment.
   - For modern path testing, keep the default unpinned install and validate with a local Step 2 smoke run before long experiments.
   - LogIX runtime initialization is required before extraction/influence calls; the engine performs explicit `logix.init(project=...)` startup using deterministic project precedence: top-level `project_name`, then `logix.project`, then fallback `dataset_attribution`.
-  - Standard execution does **not** require a root-level `config.yaml` in the repository.
+  - When `logix.init(...)` accepts `config`, the engine can pass `logix.init_config_path` (or `logix.config_path`) to avoid implicit `./config.yaml` failures in mixed CWD environments (e.g., Colab).
+  - Without an explicit init config path, some `logix-ai==0.1.1` installs may still expect `./config.yaml`; the engine now surfaces a preflight `FileNotFoundError` with an actionable YAML fix instead of a deep internal assertion.
   - Canonical initialization keys are `project_name` (preferred) or `logix.project`. Legacy `logix.init` usage is deprecated and rejected by the engine.
   - The engine fails fast when the resolved LogIX project is empty/invalid and logs effective `project` + `run_id` at startup.
   - `shadow_manifest_path` is currently informational-only in this LogIX engine path (validated for existence and logged), and is not threaded into scoring payloads.
@@ -310,6 +311,7 @@ RUN_LOGIX_SMOKE_011=1 pytest -q tests/test_logix_smoke_011.py
 - Common failure modes and fixes:
   - `Python package 'logix' is not importable`: install dependencies that include `logix-ai`.
   - `LogIX is not initialized` / init failure: verify config includes a valid `run_id`, set `project_name` (or rely on default), and confirm the installed LogIX package version supports `logix.init(...)`.
+  - Missing implicit `./config.yaml` during init (common in Colab): add `logix.init_config_path: /absolute/or/repo/relative/path/to/config.yaml` in your attribution YAML.
   - Config not found / invalid config keys: verify `--config` path and required keys in YAML (`run_id`, `output_root`, `top_k`, `train_subset_size`, IHVP controls).
   - Missing train artifacts or manifest paths: ensure training outputs and split manifests exist for the configured `run_id`.
   - OOM or slow execution: lower `train_subset_size`, reduce IHVP recursion/sample settings, or use a more capable GPU.
@@ -330,6 +332,14 @@ Colab setup snippet (same LogIX policy as above, no implicit one-off pin):
 pip install -e .
 # Optional: force legacy behavior-path repro only when needed.
 # pip install "logix-ai==0.1.1"
+```
+
+Colab/mixed-run attribution config tip (recommended):
+
+```yaml
+logix:
+  project: dataset_attribution
+  init_config_path: /content/Dataset-Attribution/configs/logix_init.yaml
 ```
 
 - For CPU-only runs, set `device_map: cpu` in the training config.
