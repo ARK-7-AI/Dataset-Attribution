@@ -32,6 +32,9 @@ logix:
   #   while execution may use modern context/execute APIs under engine shims.
   # Project resolution is version-agnostic: top-level `project_name` is preferred,
   # with `logix.project` as backward-compatible fallback.
+  # Optional (recommended for Colab / mixed-run CWDs):
+  # init_config_path: configs/logix_init.yaml
+  # Alias also accepted: `config_path`.
   project: dataset_attribution
   setup: {}
   run: {}

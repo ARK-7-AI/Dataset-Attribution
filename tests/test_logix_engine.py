@@ -327,6 +327,7 @@ def _make_engine_config(tmp_path: Path, setup_kwargs: dict[str, object]) -> LogI
         train_split_path_override=None,
         test_split_path_override=None,
         shadow_split_path_override=None,
+        init_config_path=None,
         setup_kwargs=setup_kwargs,
         run_kwargs={},
         patch_kwargs={},
@@ -1419,7 +1420,7 @@ def test_logix_engine_does_not_depend_on_cwd_config_yaml(tmp_path: Path) -> None
                     },
                 },
                 "lora": {"lora_only": True},
-                "logix": {"setup": {}, "run": {}},
+                "logix": {"setup": {}, "run": {}, "init_config_path": str(tmp_path / "missing-logix-config.yaml")},
             }
         ),
         encoding="utf-8",
@@ -1433,11 +1434,12 @@ def test_logix_engine_does_not_depend_on_cwd_config_yaml(tmp_path: Path) -> None
 
         os.chdir(isolated)
         run_logix_engine(config_path, logix_module=_PathConfigLogIX)
+    except FileNotFoundError as exc:
+        assert "logix.init_config_path was provided but file does not exist" in str(exc)
+        assert "logix.config_path" in str(exc)
     finally:
         os.chdir(cwd)
-    assert _PathConfigLogIX.init_payload["project"] == "explicit-project"
-    # Engine should not pass path-based config values; module default remains unchanged.
-    assert _PathConfigLogIX.init_payload["config"] == "./config.yaml"
+    assert _PathConfigLogIX.init_payload == {}
 
 
 def test_logix_engine_rejects_legacy_logix_init_mapping(tmp_path: Path) -> None:
@@ -1482,7 +1484,7 @@ def test_logix_engine_rejects_legacy_logix_init_mapping(tmp_path: Path) -> None:
         raise AssertionError("Expected ValueError for deprecated logix.init mapping")
 
 
-def test_logix_engine_defaults_path_based_logix_config_to_engine_config_path(tmp_path: Path) -> None:
+def test_logix_engine_uses_explicit_init_config_path_when_supported(tmp_path: Path) -> None:
     _PathConfigLogIX.init_payload = {}
     _INITIALIZED_LOGIX_MODULE_IDS.clear()
     run_root = tmp_path / "outputs" / "runs" / "path-config-default-run"
@@ -1491,6 +1493,9 @@ def test_logix_engine_defaults_path_based_logix_config_to_engine_config_path(tmp
     (run_root / "train" / "tokenizer" / "tokenizer.json").write_text("{}", encoding="utf-8")
     _write_manifest(run_root / "splits" / "train.csv", count=2, start=0)
     _write_manifest(run_root / "splits" / "test.csv", count=1, start=100)
+    logix_init_cfg = tmp_path / "configs" / "logix_init.yaml"
+    logix_init_cfg.parent.mkdir(parents=True, exist_ok=True)
+    logix_init_cfg.write_text("project: path-config-project\n", encoding="utf-8")
 
     config_path = tmp_path / "attribution_logix_path_default.yaml"
     config_path.write_text(
@@ -1511,7 +1516,7 @@ def test_logix_engine_defaults_path_based_logix_config_to_engine_config_path(tmp
                     },
                 },
                 "lora": {"lora_only": True},
-                "logix": {"setup": {}, "run": {}},
+                "logix": {"setup": {}, "run": {}, "init_config_path": "configs/logix_init.yaml"},
             }
         ),
         encoding="utf-8",
@@ -1519,25 +1524,29 @@ def test_logix_engine_defaults_path_based_logix_config_to_engine_config_path(tmp
 
     run_logix_engine(config_path, logix_module=_PathConfigLogIX)
     assert isinstance(_PathConfigLogIX.init_payload["config"], str)
-    assert _PathConfigLogIX.init_payload["config"] == "./config.yaml"
+    assert _PathConfigLogIX.init_payload["config"] == str(logix_init_cfg)
+    assert _PathConfigLogIX.init_payload["project"] == "path-config-project"
 
 
-def test_logix_engine_defaults_path_based_logix_config_to_engine_config_path(tmp_path: Path) -> None:
-    _PathConfigLogIX.init_payload = {}
+def test_logix_engine_init_fallback_remains_compatible_when_config_kwarg_unsupported(tmp_path: Path) -> None:
+    _ProjectOnlyInitLogIX.init_payload = {}
     _INITIALIZED_LOGIX_MODULE_IDS.clear()
-    run_root = tmp_path / "outputs" / "runs" / "path-config-default-run"
+    run_root = tmp_path / "outputs" / "runs" / "project-only-config-path-run"
     (run_root / "train" / "adapter").mkdir(parents=True, exist_ok=True)
     (run_root / "train" / "tokenizer").mkdir(parents=True, exist_ok=True)
     (run_root / "train" / "tokenizer" / "tokenizer.json").write_text("{}", encoding="utf-8")
     _write_manifest(run_root / "splits" / "train.csv", count=2, start=0)
     _write_manifest(run_root / "splits" / "test.csv", count=1, start=100)
+    logix_init_cfg = tmp_path / "configs" / "legacy_init.yaml"
+    logix_init_cfg.parent.mkdir(parents=True, exist_ok=True)
+    logix_init_cfg.write_text("project: explicit-project\n", encoding="utf-8")
 
     config_path = tmp_path / "attribution_logix_path_default.yaml"
     config_path.write_text(
         yaml.safe_dump(
             {
-                "run_id": "path-config-default-run",
-                "project_name": "path-config-project",
+                "run_id": "project-only-config-path-run",
+                "project_name": "explicit-project",
                 "output_root": str(tmp_path / "outputs" / "runs"),
                 "top_k": 1,
                 "train_subset_size": 2,
@@ -1551,15 +1560,16 @@ def test_logix_engine_defaults_path_based_logix_config_to_engine_config_path(tmp
                     },
                 },
                 "lora": {"lora_only": True},
-                "logix": {"setup": {}, "run": {}},
+                "logix": {"setup": {}, "run": {}, "init_config_path": "configs/legacy_init.yaml"},
             }
         ),
         encoding="utf-8",
     )
 
-    run_logix_engine(config_path, logix_module=_PathConfigLogIX)
-    assert isinstance(_PathConfigLogIX.init_payload["config"], str)
-    assert _PathConfigLogIX.init_payload["config"] == "./config.yaml"
+    artifacts = run_logix_engine(config_path, logix_module=_ProjectOnlyInitLogIX)
+    metadata = json.loads(artifacts.metadata_path.read_text(encoding="utf-8"))
+    assert _ProjectOnlyInitLogIX.init_payload == {"project": "explicit-project"}
+    assert metadata["logix_init_config_path"] == str(logix_init_cfg)
 
 
 def test_logix_engine_fails_fast_on_dict_config_for_path_based_logix(tmp_path: Path) -> None:
@@ -1603,6 +1613,58 @@ def test_logix_engine_fails_fast_on_dict_config_for_path_based_logix(tmp_path: P
         assert "project_name" in str(exc)
     else:
         raise AssertionError("Expected ValueError when logix.init has malformed type")
+
+
+def test_logix_engine_fails_fast_when_path_based_init_config_is_implicit_and_missing(tmp_path: Path) -> None:
+    _PathConfigLogIX.init_payload = {}
+    _INITIALIZED_LOGIX_MODULE_IDS.clear()
+    run_root = tmp_path / "outputs" / "runs" / "implicit-missing-init-config"
+    (run_root / "train" / "adapter").mkdir(parents=True, exist_ok=True)
+    (run_root / "train" / "tokenizer").mkdir(parents=True, exist_ok=True)
+    (run_root / "train" / "tokenizer" / "tokenizer.json").write_text("{}", encoding="utf-8")
+    _write_manifest(run_root / "splits" / "train.csv", count=2, start=0)
+    _write_manifest(run_root / "splits" / "test.csv", count=1, start=100)
+
+    config_path = tmp_path / "attribution_logix_missing_implicit.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "run_id": "implicit-missing-init-config",
+                "project_name": "explicit-project",
+                "output_root": str(tmp_path / "outputs" / "runs"),
+                "top_k": 1,
+                "train_subset_size": 2,
+                "influence": {
+                    "mode": "ihvp",
+                    "ihvp": {
+                        "damping": 0.01,
+                        "scale": 10.0,
+                        "recursion_depth": 8,
+                        "num_samples": 1,
+                    },
+                },
+                "lora": {"lora_only": True},
+                "logix": {"setup": {}, "run": {}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    isolated = tmp_path / "isolated_cwd_no_config"
+    isolated.mkdir(parents=True, exist_ok=True)
+    cwd = Path.cwd()
+    try:
+        import os
+
+        os.chdir(isolated)
+        run_logix_engine(config_path, logix_module=_PathConfigLogIX)
+    except FileNotFoundError as exc:
+        assert "Installed logix-ai appears to expect an implicit `./config.yaml`" in str(exc)
+        assert "logix.init_config_path" in str(exc)
+    else:
+        raise AssertionError("Expected FileNotFoundError for missing implicit ./config.yaml")
+    finally:
+        os.chdir(cwd)
 
 
 def test_logix_engine_runs_without_local_config_yaml_when_init_accepts_project_only(tmp_path: Path) -> None:
