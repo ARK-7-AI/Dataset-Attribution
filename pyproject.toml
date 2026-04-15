@@ -15,6 +15,7 @@ dependencies = [
   "datasets",
   "torch",
   "pyyaml>=6.0",
+  # Intentionally unpinned: Step2 supports both legacy (0.1.1) and modern LogIX behavior paths.
   "logix-ai",
 ]
 

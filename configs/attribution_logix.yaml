@@ -25,7 +25,13 @@ lora:
   adapter_path: outputs/runs/final_report_run/train/adapter
 
 logix:
-  # Backward-compatible project key. Top-level `project_name` takes precedence.
+  # Compatibility expectations by installed `logix-ai` version:
+  # - 0.1.1 (legacy path): keep `setup` and `run` blocks present (can be `{}`),
+  #   and rely on module-level APIs (`log/get_log/add_analysis/finalize`).
+  # - newer versions (modern path): `setup`/`run` remain accepted pass-through keys,
+  #   while execution may use modern context/execute APIs under engine shims.
+  # Project resolution is version-agnostic: top-level `project_name` is preferred,
+  # with `logix.project` as backward-compatible fallback.
   project: dataset_attribution
   setup: {}
   run: {}
