@@ -257,9 +257,23 @@ bash scripts/run_step1_final_check.sh --run-id <run_id>
 - Script: `scripts/run_step2_logix.sh`
 - Prerequisites:
   - Step 1 gate has passed for the same run.
-  - `logix` Python package is installed (via project dependencies including `logix-ai`), with required contract `logix>=0.1.1`.
-  - Compatibility note (tested in this repository): PyPI `logix-ai==0.1.1` uses a legacy instrumentation flow (`setup() -> None` plus module-level `add_analysis(...)` / `finalize(...)` and `log(...)` / `get_log(...)` APIs). Modern execute flow (`context.run`, `context.execute`, `logix.run`, `logix.execute`) requires a compatible newer LogIX build.
+  - `logix` Python package is installed (via project dependencies including `logix-ai`).
   - Attribution config exists (default: `configs/attribution_logix.yaml`) and points to valid run artifacts/manifests.
+
+#### Step 2 LogIX compatibility matrix (explicit policy)
+
+| Installed package | Behavior path used by Step 2 | Config key expectations | Validation status in this repo |
+| --- | --- | --- | --- |
+| `logix-ai==0.1.1` | **Legacy behavior path** | Uses `logix.setup`/`logix.run` placeholders and module-level `log(...)`, `get_log(...)`, `add_analysis(...)`, `finalize(...)` APIs; top-level `project_name` (or fallback `logix.project`) is still required for `logix.init(...)`. | Explicit smoke/integration coverage via `tests/test_logix_smoke_011.py`. |
+| Newer `logix-ai` (anything not `0.1.1`) | **Modern behavior path** | Expected to support modern execute flow (`context.run`, `context.execute`, `logix.run`, `logix.execute`) while keeping `project_name`/`logix.project` initialization contract. | Supported by engine compatibility shims, but you should verify in your environment before report-grade runs. |
+
+#### Dependency policy decision (`pyproject.toml`)
+
+- `pyproject.toml` intentionally keeps `logix-ai` **unpinned**.
+- Rationale: this repository needs to support both the legacy `0.1.1` behavior path and modern LogIX builds; pinning to one exact version would force one path and block the other.
+- Operational guidance:
+  - For deterministic reproduction of the legacy path, install `logix-ai==0.1.1` explicitly in your environment.
+  - For modern path testing, keep the default unpinned install and validate with a local Step 2 smoke run before long experiments.
   - LogIX runtime initialization is required before extraction/influence calls; the engine performs explicit `logix.init(project=...)` startup using deterministic project precedence: top-level `project_name`, then `logix.project`, then fallback `dataset_attribution`.
   - Standard execution does **not** require a root-level `config.yaml` in the repository.
   - Canonical initialization keys are `project_name` (preferred) or `logix.project`. Legacy `logix.init` usage is deprecated and rejected by the engine.
@@ -284,7 +298,7 @@ Then patch only `/tmp/attribution_logix_smoke.yaml` for mixed-run manifests (set
 bash scripts/run_step2_logix.sh --config /tmp/attribution_logix_smoke.yaml
 ```
 
-- Local LogIX 0.1.1 smoke/integration test command (installs editable project + pinned LogIX, generates Step2 smoke config, runs tiny attribution, and validates `topk.json`/`metadata.json`):
+- Local **legacy-path** (`logix-ai==0.1.1`) smoke/integration test command (installs editable project + pinned LogIX, generates Step2 smoke config, runs tiny attribution, and validates `topk.json`/`metadata.json`):
 
 ```bash
 RUN_LOGIX_SMOKE_011=1 pytest -q tests/test_logix_smoke_011.py
@@ -309,6 +323,15 @@ RUN_LOGIX_SMOKE_011=1 pytest -q tests/test_logix_smoke_011.py
 - A Colab-ready profile is available at `configs/profiles/colab_train_lora.yaml`; it sets `device_map: null` to avoid `device_map: auto` during training runs.
 - For quick, stable LR comparisons, use `configs/profiles/colab_lr_sweep_stable.yaml` (2e-4, 1e-4, 5e-5) with fixed `seed: 42` and `max_steps: 120`.
 - Keep the default Colab LR at `2e-4` unless run metrics show clear evidence that a higher LR is better.
+
+Colab setup snippet (same LogIX policy as above, no implicit one-off pin):
+
+```bash
+pip install -e .
+# Optional: force legacy behavior-path repro only when needed.
+# pip install "logix-ai==0.1.1"
+```
+
 - For CPU-only runs, set `device_map: cpu` in the training config.
 - Startup logs print the final placement decision (`resolved_device_map`, placement flags, and parameter-device summary).
 
