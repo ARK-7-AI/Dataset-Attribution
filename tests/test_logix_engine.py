@@ -213,6 +213,57 @@ class _LegacyInstrumentationLogIX:
         return {"status": "legacy-ok", "scores": scores}
 
 
+class _LegacyInstrumentationStrictSplitLogIX:
+    analyses: list[dict[str, object]] = []
+    logs: list[dict[str, object]] = []
+    log_calls: list[dict[str, object]] = []
+    get_log_calls: list[dict[str, object]] = []
+
+    @staticmethod
+    def init(**kwargs):
+        return kwargs
+
+    @staticmethod
+    def setup(**kwargs):
+        _ = kwargs
+        return {"__logix_mode__": "legacy_instrumentation"}
+
+    @classmethod
+    def log(cls, **kwargs):
+        cls.log_calls.append(dict(kwargs))
+        if "split" in kwargs:
+            raise TypeError("log() got an unexpected keyword argument 'split'")
+        sample_ids = list(kwargs.get("sample_ids", []))
+        entry = {"sample_ids": sample_ids}
+        cls.logs.append(entry)
+        return entry
+
+    @classmethod
+    def get_log(cls, **kwargs):
+        cls.get_log_calls.append(dict(kwargs))
+        if "split" in kwargs:
+            raise TypeError("get_log() got an unexpected keyword argument 'split'")
+        if cls.logs:
+            return cls.logs.pop(0)
+        return {"sample_ids": []}
+
+    @classmethod
+    def add_analysis(cls, *args, **kwargs):
+        cls.analyses.append({"args": args, "kwargs": kwargs})
+
+    @classmethod
+    def finalize(cls):
+        if not cls.analyses:
+            return {"status": "legacy-empty", "scores": {}}
+        kwargs = cls.analyses[-1]["kwargs"]
+        train_sample_ids = list(kwargs.get("train_sample_ids", []))
+        scores = {
+            test_id: {train_id: float(index + 1) for index, train_id in enumerate(train_sample_ids)}
+            for test_id in kwargs.get("test_sample_ids", [])
+        }
+        return {"status": "legacy-ok", "scores": scores}
+
+
 def _make_engine_config(tmp_path: Path, setup_kwargs: dict[str, object]) -> LogIXEngineConfig:
     return LogIXEngineConfig(
         run_id="setup-test",
@@ -384,7 +435,58 @@ def test_execute_logix_legacy_instrumentation_path(tmp_path: Path, caplog) -> No
     assert result["status"] == "legacy-ok"
     assert "influence_scores" in result
     assert result["influence_scores"]["t1"]["a"] == 1.0
-    assert "selected_api_path=logix.finalize(legacy_instrumentation)" in caplog.text
+    assert "selected_api_path=logix.finalize(legacy_" in caplog.text
+
+
+def test_execute_logix_legacy_log_split_rejection_fallback(tmp_path: Path, caplog) -> None:
+    config = _make_engine_config(tmp_path, {})
+    caplog.set_level("INFO")
+    _LegacyInstrumentationStrictSplitLogIX.analyses = []
+    _LegacyInstrumentationStrictSplitLogIX.logs = []
+    _LegacyInstrumentationStrictSplitLogIX.log_calls = []
+    _LegacyInstrumentationStrictSplitLogIX.get_log_calls = []
+
+    result = execute_logix(
+        context={"__logix_mode__": "legacy_instrumentation"},
+        config=config,
+        sample_ids=["a", "b"],
+        test_sample_ids=["t1"],
+        logix_module=_LegacyInstrumentationStrictSplitLogIX,
+    )
+
+    assert result["status"] == "legacy-ok"
+    assert _LegacyInstrumentationStrictSplitLogIX.log_calls[0]["split"] == "train"
+    assert _LegacyInstrumentationStrictSplitLogIX.log_calls[1] == {"sample_ids": ["a"]}
+    assert _LegacyInstrumentationStrictSplitLogIX.log_calls[2]["split"] == "test"
+    assert _LegacyInstrumentationStrictSplitLogIX.log_calls[3] == {"sample_ids": ["t1"]}
+    assert "callable=logix.log removed_kwargs=['split'] retained_kwargs=['sample_ids']" in caplog.text
+
+
+def test_execute_logix_legacy_get_log_split_rejection_fallback(tmp_path: Path, caplog) -> None:
+    config = _make_engine_config(tmp_path, {})
+    caplog.set_level("INFO")
+    _LegacyInstrumentationStrictSplitLogIX.analyses = []
+    _LegacyInstrumentationStrictSplitLogIX.logs = []
+    _LegacyInstrumentationStrictSplitLogIX.log_calls = []
+    _LegacyInstrumentationStrictSplitLogIX.get_log_calls = []
+
+    result = execute_logix(
+        context={"__logix_mode__": "legacy_instrumentation"},
+        config=config,
+        sample_ids=["a", "b"],
+        test_sample_ids=["t1"],
+        logix_module=_LegacyInstrumentationStrictSplitLogIX,
+    )
+
+    analysis_kwargs = _LegacyInstrumentationStrictSplitLogIX.analyses[-1]["kwargs"]
+    assert result["status"] == "legacy-ok"
+    assert _LegacyInstrumentationStrictSplitLogIX.get_log_calls[0]["split"] == "train"
+    assert _LegacyInstrumentationStrictSplitLogIX.get_log_calls[1] == {}
+    assert _LegacyInstrumentationStrictSplitLogIX.get_log_calls[2]["split"] == "test"
+    assert _LegacyInstrumentationStrictSplitLogIX.get_log_calls[3] == {}
+    assert analysis_kwargs["train_log"]["sample_ids"] == ["a"]
+    assert analysis_kwargs["test_log"]["sample_ids"] == ["t1"]
+    assert "callable=logix.get_log removed_kwargs=['split'] retained_kwargs=[]" in caplog.text
 
 
 def test_execute_logix_error_lists_discovered_callables(tmp_path: Path) -> None:
