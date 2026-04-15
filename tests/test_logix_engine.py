@@ -213,6 +213,47 @@ class _LegacyInstrumentationLogIX:
         return {"status": "legacy-ok", "scores": scores}
 
 
+
+class _LegacyInstrumentationMarkerSetupLogIX:
+    __version__ = "0.2.0"
+    analyses: list[dict[str, object]] = []
+    logs: dict[str, dict[str, object]] = {}
+
+    @staticmethod
+    def init(**kwargs):
+        return kwargs
+
+    @staticmethod
+    def setup(**kwargs):
+        _ = kwargs
+        return {"__logix_mode__": "legacy_instrumentation", "marker": "explicit"}
+
+    @classmethod
+    def log(cls, *, split: str, sample_ids: list[str]):
+        cls.logs[split] = {"sample_ids": list(sample_ids)}
+        return cls.logs[split]
+
+    @classmethod
+    def get_log(cls, *, split: str):
+        return cls.logs.get(split, {"sample_ids": []})
+
+    @classmethod
+    def add_analysis(cls, *args, **kwargs):
+        cls.analyses.append({"args": args, "kwargs": kwargs})
+
+    @classmethod
+    def finalize(cls):
+        if not cls.analyses:
+            return {"status": "legacy-empty", "scores": {}}
+        kwargs = cls.analyses[-1]["kwargs"]
+        train_sample_ids = list(kwargs.get("train_sample_ids", []))
+        scores = {
+            test_id: {train_id: float(index + 1) for index, train_id in enumerate(train_sample_ids)}
+            for test_id in kwargs.get("test_sample_ids", [])
+        }
+        return {"status": "legacy-ok", "scores": scores}
+
+
 class _LegacyInstrumentationStrictSplitLogIX:
     analyses: list[dict[str, object]] = []
     logs: list[dict[str, object]] = []
@@ -424,6 +465,8 @@ def test_execute_logix_legacy_instrumentation_path(tmp_path: Path, caplog) -> No
     _LegacyInstrumentationLogIX.logs = {}
     context = setup_logix(config, tmp_path / "out", _LegacyInstrumentationLogIX)
 
+    assert context is None
+
     result = execute_logix(
         context=context,
         config=config,
@@ -435,7 +478,30 @@ def test_execute_logix_legacy_instrumentation_path(tmp_path: Path, caplog) -> No
     assert result["status"] == "legacy-ok"
     assert "influence_scores" in result
     assert result["influence_scores"]["t1"]["a"] == 1.0
-    assert "selected_api_path=logix.finalize(legacy_" in caplog.text
+    assert "selected_api_path=logix.finalize(legacy_module)" in caplog.text
+
+
+def test_execute_logix_legacy_instrumentation_marker_context_path(tmp_path: Path, caplog) -> None:
+    config = _make_engine_config(tmp_path, {})
+    caplog.set_level("INFO")
+    _LegacyInstrumentationMarkerSetupLogIX.analyses = []
+    _LegacyInstrumentationMarkerSetupLogIX.logs = {}
+    context = setup_logix(config, tmp_path / "out", _LegacyInstrumentationMarkerSetupLogIX)
+
+    assert context == {"__logix_mode__": "legacy_instrumentation", "marker": "explicit"}
+
+    result = execute_logix(
+        context=context,
+        config=config,
+        sample_ids=["a", "b"],
+        test_sample_ids=["t1"],
+        logix_module=_LegacyInstrumentationMarkerSetupLogIX,
+    )
+
+    assert result["status"] == "legacy-ok"
+    assert "influence_scores" in result
+    assert result["influence_scores"]["t1"]["a"] == 1.0
+    assert "selected_api_path=logix.finalize(legacy_instrumentation)" in caplog.text
 
 
 def test_execute_logix_legacy_log_split_rejection_fallback(tmp_path: Path, caplog) -> None:
