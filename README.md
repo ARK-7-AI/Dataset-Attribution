@@ -71,6 +71,6 @@ That’s the full required path for final training and downstream attribution wo
 
 
  ## 5) Saved Lora Adapters for Step 2 Attribution :
- The Saved adapters can be found at Outputs/saved_adapters
+ The Saved adapters can be found at : [I'm an inline-style link](https://drive.google.com/drive/folders/1AW9yc5OwwLQg8nPOdVgWSwbHVSrzHujV?usp=sharing)
 
 
