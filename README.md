@@ -56,3 +56,15 @@ bash scripts/run_lora.sh --profile final --final-report
 3. Run final LoRA training with `configs/train_lora.final.yaml`.
 
 That’s the full required path for final training and downstream attribution work.
+
+## 5) Execution Steps 
+ The project is setup as a two stage pipeline via the two notebooks 
+ 1. LORA Training --->  Notebooks/LORA-Training.ipynb.
+ 2. Attribution and downstream evaluations ---> Notebooks/Post-Hoc-attribution.ipynb 
+
+
+ Post-HOC uses the adapters from step 1 and runs the downstream evaluations 
+
+ The training code itself is implemented here in the repo as mentioned above and utilised by training notebook, while attribution and downstream tasks are implemented in the Post-Hoc Notebook
+ 
+
