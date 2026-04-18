@@ -66,5 +66,11 @@ That’s the full required path for final training and downstream attribution wo
  Post-HOC uses the adapters from step 1 and runs the downstream evaluations 
 
  The training code itself is implemented here in the repo as mentioned above and utilised by training notebook, while attribution and downstream tasks are implemented in the Post-Hoc Notebook
- 
+
+ If there is issue previewing the notebook , download the notebooks .
+
+
+ ## 5) Saved Lora Adapters for Step 2 Attribution :
+ The Saved adapters can be found at Outputs/saved_adapters
+
 
